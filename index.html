@@ -156,7 +156,17 @@ const S = {
   tab: 'products', q: '', filter: 'all', mq: '', mlevel: 'likely', mshow: 80, cq: '', cmulti: false, cat: '', sort: 'name', page: 0,
   quote: loadDraft(), importState: null,
 };
-const DEFAULTS = { defaultMargin: 0.2, mode: 'markup', round: 0, currency: 'ج.م', company: '', catMargins: {} };
+const DEFAULTS = { defaultMargin: 0.2, mode: 'markup', round: 0, currency: 'ج.م', company: '', catMargins: {}, fields: {} };
+// columns people add themselves while uploading (e.g. تجاري, صيدلي): settings.fields = {id: {name, order}}
+const userFields = () => Object.entries(settings().fields || {}).map(([id, f]) => ({ id, ...f })).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+function saveField(id, patch) {
+  const fields = { ...settings().fields, [id]: { ...(settings().fields || {})[id], ...patch } };
+  S.settings = { ...settings(), fields }; setDoc('settings/main', { fields: { [id]: patch } }, MERGE); changed();
+}
+function deleteField(id) {
+  const fields = { ...settings().fields }; delete fields[id];
+  S.settings = { ...settings(), fields }; setDoc('settings/main', { fields: { [id]: DEL() } }, MERGE); changed();
+}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = n => (n == null || isNaN(n)) ? '–' : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -184,7 +194,7 @@ function matches(text, q) {
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 
 // ---------- derived data ----------
-let D = { offers: [], products: [], byPid: {}, cats: [] };
+let D = { offers: [], products: [], byPid: {}, cats: [], fields: [] };
 function supplierOrder() { return Object.values(S.suppliers).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name)); }
 // An item's identity within a supplier list: its name and details, plus a counter for exact repeats.
 function offerKey(name, detail, seen) {
@@ -200,23 +210,22 @@ function derive() {
       const ch = S.chunks[sup.id + '-' + c];
       if (!ch) continue;
       ch.forEach((r, i) => {
-        const [name, price, detail, source, category, prev] = r;
+        const [name, price, detail, source, category, prev, extra] = r;
         const key = sup.id + ':' + offerKey(name, detail, seen);
         const own = 'o-' + sup.id + '-' + key.slice(sup.id.length + 1).replace('.', '-');
-        offers.push({ key, sid: sup.id, sup: sup.name, name, price: +price, prev: +prev || 0, detail: detail || '', source: source || '', category: category || '', pid: S.links[key] || own });
+        offers.push({ key, sid: sup.id, sup: sup.name, name, price: +price, prev: +prev || 0, extra: extra || {}, detail: detail || '', source: source || '', category: category || '', pid: S.links[key] || own });
       });
     }
   }
   const byPid = {};
   for (const o of offers) (byPid[o.pid] ||= { pid: o.pid, offers: [] }).offers.push(o);
-  const cats = new Set();
+  const cats = new Set(), fieldList = userFields(), fieldsUsed = new Set();
   for (const p of Object.values(byPid)) {
     const ov = S.prodOv[p.pid] || {};
     const first = p.offers[0];
     p.name = ov.name || first.name;
     p.detail = ov.detail ?? first.detail;
     p.category = ov.category ?? (p.offers.find(o => o.category)?.category || '');
-    p.unit = ov.unit || '';
     if (p.category) cats.add(p.category);
     const priced = p.offers.filter(o => o.price > 0); // a 0 or missing price is never the cheapest
     const sorted = [...(priced.length ? priced : p.offers)].sort((a, b) => a.price - b.price);
@@ -226,12 +235,16 @@ function derive() {
     const chosen = p.chosenSid ? sorted.find(o => o.sid === p.chosenSid) : null;
     p.buy = chosen || p.best;
     p.cost = p.buy.price;
+    // extra columns come from the supplier you buy from, else from any supplier that has them
+    const extra = k => { const v = p.buy.extra[k] ?? p.offers.find(o => o.extra[k] != null && o.extra[k] !== '')?.extra[k]; return v == null ? '' : v; };
+    p.unit = ov.unit || String(extra('unit'));
+    p.extra = {}; for (const f of fieldList) { const v = extra(f.id); if (v !== '') { p.extra[f.id] = v; fieldsUsed.add(f.id); } }
     p.marginOv = ov.margin;
     p.margin = ov.margin ?? st.catMargins[p.category] ?? st.defaultMargin;
     p.sell = sellPrice(p.cost, p.margin, st);
     p.profit = p.sell - p.cost;
   }
-  D = { offers, byPid, products: Object.values(byPid), cats: [...cats].sort() };
+  D = { offers, byPid, products: Object.values(byPid), cats: [...cats].sort(), fields: fieldList.filter(f => fieldsUsed.has(f.id)) };
 }
 function sellPrice(cost, m, st) {
   let s = st.mode === 'margin' ? (m < 1 ? cost / (1 - m) : NaN) : cost * (1 + m);
@@ -287,8 +300,9 @@ function scheduleRender() { if (renderPending) return; renderPending = true; req
 
 // Firestore can't hold arrays inside arrays, so each row is stored as {n, p, d, s, c}.
 // o (optional) is the item's price before the latest upload, when that upload changed it.
-const rowsToDb = rows => rows.map(([n, p, d, s, c, o]) => Object.assign({ n: n ?? '', p: +p, d: d ?? '', s: s ?? '', c: c ?? '' }, o > 0 ? { o: +o } : {}));
-const rowsFromDb = rows => (rows || []).map(r => Array.isArray(r) ? r : [r.n, r.p, r.d, r.s, r.c, r.o]);
+// x (optional) holds extra columns: the unit and the user's own columns, {unit, <field id>: value}.
+const rowsToDb = rows => rows.map(([n, p, d, s, c, o, x]) => Object.assign({ n: n ?? '', p: +p, d: d ?? '', s: s ?? '', c: c ?? '' }, o > 0 ? { o: +o } : {}, x && Object.keys(x).length ? { x } : {}));
+const rowsFromDb = rows => (rows || []).map(r => Array.isArray(r) ? r : [r.n, r.p, r.d, r.s, r.c, r.o, r.x]);
 const configured = () => { const c = window.FIREBASE_CONFIG; return c && c.apiKey && !/PASTE/i.test(c.apiKey); };
 let unsubs = [];
 
@@ -414,8 +428,8 @@ function renderProducts(v) {
   </div>
   <div class="tablebox">
     <table>
-      <thead><tr><th>Product</th><th>Supplier prices</th><th>Buy from</th><th class="num">Cost</th><th class="num">Margin %</th><th class="num">Sell price</th><th class="num">Profit</th><th></th></tr></thead>
-      <tbody>${rows.map(rowHtml).join('') || `<tr><td colspan="8" class="empty">No products match. Clear the search or filters to see everything.</td></tr>`}</tbody>
+      <thead><tr><th>Product</th>${D.fields.map(f => `<th class="ar">${esc(f.name)}</th>`).join('')}<th>Supplier prices</th><th>Buy from</th><th class="num">Cost</th><th class="num">Margin %</th><th class="num">Sell price</th><th class="num">Profit</th><th></th></tr></thead>
+      <tbody>${rows.map(rowHtml).join('') || `<tr><td colspan="${8 + D.fields.length}" class="empty">No products match. Clear the search or filters to see everything.</td></tr>`}</tbody>
     </table>
     <div class="pager"><span class="muted small">${list.length.toLocaleString()} shown · page ${S.page + 1} of ${pages}</span>
       <button class="btn small" id="prev" ${S.page ? '' : 'disabled'}>Previous</button><button class="btn small" id="next" ${S.page < pages - 1 ? '' : 'disabled'}>Next</button></div>
@@ -444,7 +458,8 @@ function rowHtml(p) {
     : `<span class="muted">${esc(p.best.sup)}</span>`;
   const inQ = S.quote.lines.some(l => l.pid === p.pid);
   return `<tr>
-    <td class="pname"><button data-open="${esc(p.pid)}">${esc(p.name)}</button>${p.detail ? `<div class="det">${esc(p.detail)}</div>` : ''}${p.category ? `<div class="chips" style="margin-top:3px"><span class="chip cat">${esc(p.category)}</span></div>` : ''}</td>
+    <td class="pname"><button data-open="${esc(p.pid)}">${esc(p.name)}</button>${p.detail || p.unit ? `<div class="det">${esc([p.detail, p.unit].filter(Boolean).join(' · '))}</div>` : ''}${p.category ? `<div class="chips" style="margin-top:3px"><span class="chip cat">${esc(p.category)}</span></div>` : ''}</td>
+    ${D.fields.map(f => `<td class="ar">${esc(p.extra[f.id] ?? '')}</td>`).join('')}
     <td><div class="chips">${prices}</div></td>
     <td>${buy}</td>
     <td class="num">${fmt(p.cost)}</td>
@@ -455,6 +470,13 @@ function rowHtml(p) {
   </tr>`;
 }
 
+// an offer's unit and the user's own columns, as "الوحدة: علبة · تجاري: 5.2"
+function extraText(o) {
+  const parts = [];
+  if (o.extra.unit) parts.push('Unit: ' + o.extra.unit);
+  for (const f of userFields()) if (o.extra[f.id] != null && o.extra[f.id] !== '') parts.push(f.name + ': ' + o.extra[f.id]);
+  return parts.join(' · ');
+}
 // ---------- product dialog ----------
 function openProduct(pid) {
   const p = D.byPid[pid]; if (!p) return;
@@ -468,12 +490,12 @@ function openProduct(pid) {
       <div class="field"><label for="pd-name">Product name (shown to customers)</label><input id="pd-name" class="ar" value="${esc(ov.name || '')}" placeholder="${esc(p.offers[0].name)}"></div>
       <div class="field"><label for="pd-detail">Details</label><input id="pd-detail" class="ar" value="${esc(ov.detail ?? '')}" placeholder="${esc(p.offers[0].detail || 'Size, weight, pack…')}"></div>
       <div class="field"><label for="pd-cat">Category</label><input id="pd-cat" class="ar" list="catlist" value="${esc(ov.category ?? '')}" placeholder="${esc(p.offers.find(o => o.category)?.category || 'None')}"><datalist id="catlist">${D.cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
-      <div class="field"><label for="pd-unit">Unit</label><input id="pd-unit" class="ar" value="${esc(ov.unit || '')}" placeholder="piece, box, pack…"></div>
+      <div class="field"><label for="pd-unit">Unit</label><input id="pd-unit" class="ar" value="${esc(ov.unit || '')}" placeholder="${esc(p.unit || 'piece, box, pack…')}"></div>
     </div>
     <div class="row"><button class="btn primary" id="pd-save">Save details</button><span class="muted small">Leave a field empty to use the supplier's text.</span></div>
     <h3>Supplier prices</h3>
     <div class="tablebox"><table><thead><tr><th>Supplier</th><th>Their item name</th><th class="num">Price</th><th>Source</th><th></th></tr></thead><tbody>
-      ${[...p.offers].sort((a, b) => a.price - b.price).map(o => `<tr><td>${esc(o.sup)}${o === p.best && p.nSup > 1 ? ' <span class="chip best">best</span>' : ''}</td><td class="ar">${esc(o.name)}${o.detail ? ' · ' + esc(o.detail) : ''}</td><td class="num">${fmt(o.price)}</td><td class="small muted">${esc(o.source)}</td><td>${p.offers.length > 1 ? `<button class="btn small" data-split="${esc(o.key)}">Not the same</button>` : ''}</td></tr>`).join('')}
+      ${[...p.offers].sort((a, b) => a.price - b.price).map(o => `<tr><td>${esc(o.sup)}${o === p.best && p.nSup > 1 ? ' <span class="chip best">best</span>' : ''}</td><td class="ar">${esc(o.name)}${o.detail ? ' · ' + esc(o.detail) : ''}${extraText(o) ? `<div class="small muted">${esc(extraText(o))}</div>` : ''}</td><td class="num">${fmt(o.price)}</td><td class="small muted">${esc(o.source)}</td><td>${p.offers.length > 1 ? `<button class="btn small" data-split="${esc(o.key)}">Not the same</button>` : ''}</td></tr>`).join('')}
     </tbody></table></div>
     <p class="small muted">Selling at ${fmt(p.sell)} ${esc(st.currency)} with a ${pct(p.margin)}% ${st.mode === 'margin' ? 'margin' : 'markup'} on a cost of ${fmt(p.cost)} from ${esc(p.buy.sup)}.</p>
     <h3>Link the same product from another supplier</h3>
@@ -711,12 +733,13 @@ document.addEventListener('click', e => {
   else if (t.dataset.vpage) { V.view += +t.dataset.vpage; renderVisual(); }
 });
 // ---------- column choices for Excel/CSV ----------
-// I.cols[c] = {use: 'name'|'price'|'detail'|'category'|'skip', label}; details columns can be named ("Size: 40").
-const USES = [['name', 'Item name'], ['price', 'Price'], ['detail', 'Details'], ['category', 'Category'], ['skip', "Don't import"]];
+// I.cols[c] = {use: 'name'|'price'|'detail'|'category'|'unit'|'f:<field id>'|'skip', label}; details columns can be named ("Size: 40").
+const USES = [['name', 'Item name'], ['price', 'Price'], ['detail', 'Details'], ['category', 'Category'], ['unit', 'Unit'], ['skip', "Don't import"]];
+const SINGLE = u => u !== 'detail' && u !== 'skip'; // one column each, except details
 const colOf = (I, use) => I.cols.findIndex(c => c.use === use);
 const headText = (I, c) => I.header ? String(I.rows[0][c] ?? '').trim() : '';
 function setUse(I, c, use) {
-  if (use === 'name' || use === 'price' || use === 'category') I.cols.forEach(x => { if (x.use === use) x.use = 'skip'; }); // only one of each
+  if (SINGLE(use)) I.cols.forEach(x => { if (x.use === use) x.use = 'skip'; }); // only one of each
   I.cols[c].use = use; delete I.cols[c].rank;
 }
 // reuse the columns chosen the last time this supplier's list was uploaded, matched by header text
@@ -730,7 +753,8 @@ function applySavedColumns(I) {
   I.header = header;
   I.cols.forEach(x => { x.use = 'skip'; x.label = ''; });
   // rank keeps details in the saved order even if the file's columns moved, so item names stay the same
-  found.forEach((c, i) => { if (c >= 0) I.cols[c] = { use: saved[i].use, label: saved[i].label || '', rank: i }; });
+  const fields = settings().fields || {};
+  found.forEach((c, i) => { if (c >= 0) I.cols[c] = { use: saved[i].use.startsWith('f:') && !fields[saved[i].use.slice(2)] ? 'skip' : saved[i].use, label: saved[i].label || '', rank: i }; });
   I.usedSaved = true;
 }
 function parsedRows() {
@@ -741,9 +765,11 @@ function parsedRows() {
   if (name < 0 || price < 0) return [];
   const details = I.cols.map((x, c) => x.use === 'detail' ? c : -1).filter(c => c >= 0).sort((a, b) => (I.cols[a].rank ?? 1000 + a) - (I.cols[b].rank ?? 1000 + b));
   const cell = (r, c) => String(r[c] ?? '').trim();
+  const extras = I.cols.map((x, c) => [x.use === 'unit' ? 'unit' : x.use.startsWith('f:') ? x.use.slice(2) : '', c]).filter(([k]) => k);
+  const extraOf = r => { const x = {}; for (const [k, c] of extras) { const v = cell(r, c); if (v) x[k] = v; } return Object.keys(x).length ? x : undefined; };
   return body.map((r, i) => [cell(r, name), num(r[price]),
     details.map(c => { const v = cell(r, c), l = I.cols[c].label.trim(); return v ? (l ? `${l}: ${v}` : v) : ''; }).filter(Boolean).join(' · '),
-    'row ' + (i + (I.header ? 2 : 1)), cat >= 0 ? cell(r, cat) : ''])
+    'row ' + (i + (I.header ? 2 : 1)), cat >= 0 ? cell(r, cat) : '', undefined, extraOf(r)])
     .filter(r => r[0] && r[1] > 0);
 }
 // ---------- price-change report (uploading new prices for an existing supplier) ----------
@@ -765,7 +791,7 @@ function priceReport(sid, rows) {
 // rows tagged with their previous price, so product chips can show the change
 function withPrev(sid, rows) {
   const old = new Map(D.offers.filter(o => o.sid === sid).map(o => [o.key, o.price])), seen = {};
-  return rows.map(r => { const was = old.get(sid + ':' + offerKey(r[0], r[2], seen)); return [...r.slice(0, 5), was > 0 && Math.abs(was - r[1]) >= 0.005 ? was : undefined]; });
+  return rows.map(r => { const was = old.get(sid + ':' + offerKey(r[0], r[2], seen)); return [...r.slice(0, 5), was > 0 && Math.abs(was - r[1]) >= 0.005 ? was : undefined, r[6]]; });
 }
 function reportHtml(R) {
   const n = x => x.toLocaleString();
@@ -795,19 +821,35 @@ function renderMapping() {
   const rows = parsedRows();
   const sample = c => { const r = I.rows.slice(I.header ? 1 : 0).find(r => String(r[c] ?? '').trim() !== ''); return r ? String(r[c]).trim().slice(0, 40) : ''; };
   const missing = [colOf(I, 'name') < 0 && 'the item name', colOf(I, 'price') < 0 && 'the price'].filter(Boolean);
+  const fields = userFields(), fieldsById = Object.fromEntries(fields.map(f => [f.id, f]));
   box.innerHTML = `<h3>Columns</h3>
-    <p class="small muted">Choose what each column of the file is. You can import several columns as details and give each one the name you want shown, for example "Size" or "المقاس"; leave the name empty to show just the value.${I.usedSaved ? ' These are the choices from the last upload of this supplier.' : ''}</p>
+    <p class="small muted">Choose what each column of the file is. You can import several columns as details and give each one the name you want shown, for example "Size" or "المقاس"; leave the name empty to show just the value. Choose <b>+ New column</b> to keep a column under its own name, for example a second price like تجاري or صيدلي; it gets its own column on the Products tab and in the costing sheet, and you can rename it here or in Settings.${I.usedSaved ? ' These are the choices from the last upload of this supplier.' : ''}</p>
     <div class="tablebox"><table><thead><tr><th>Column in the file</th><th>Example</th><th>Use as</th><th>Name to show</th></tr></thead><tbody>
       ${I.cols.map((x, c) => `<tr><td class="ar">${esc(headText(I, c) || 'Column ' + (c + 1))}</td><td class="ar small muted">${esc(sample(c))}</td>
-        <td><select data-coluse="${c}" aria-label="Use column ${c + 1} as">${USES.map(([v, l]) => `<option value="${v}" ${x.use === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
-        <td>${x.use === 'detail' ? `<input class="ar" data-collabel="${c}" value="${esc(x.label)}" placeholder="${esc(headText(I, c) || 'e.g. Size')}" style="width:150px" aria-label="Name for column ${c + 1}">` : ''}</td></tr>`).join('')}
+        <td><select data-coluse="${c}" aria-label="Use column ${c + 1} as">${USES.map(([v, l]) => `<option value="${v}" ${x.use === v ? 'selected' : ''}>${l}</option>`).join('')}
+          ${fields.length ? `<optgroup label="Your columns">${fields.map(f => `<option value="f:${esc(f.id)}" ${x.use === 'f:' + f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</optgroup>` : ''}
+          <option value="+new">+ New column…</option></select></td>
+        <td>${x.use === 'detail' ? `<input class="ar" data-collabel="${c}" value="${esc(x.label)}" placeholder="${esc(headText(I, c) || 'e.g. Size')}" style="width:150px" aria-label="Name for column ${c + 1}">`
+          : x.use.startsWith('f:') ? `<input class="ar" data-fieldname="${esc(x.use.slice(2))}" value="${esc(fieldsById[x.use.slice(2)]?.name || '')}" style="width:150px" aria-label="Rename this column">` : ''}</td></tr>`).join('')}
     </tbody></table></div>
     ${missing.length ? `<p class="chip warn">Choose which column has ${missing.join(' and ')}.</p>` : ''}
     <label class="row small"><input type="checkbox" id="mp-head" ${I.header ? 'checked' : ''}> The first row is a header</label>
     <div class="tablebox"><table><thead><tr><th>Item</th><th>Details</th><th class="num">Price</th></tr></thead><tbody>${rows.slice(0, 6).map(r => `<tr><td class="ar">${esc(r[0])}</td><td class="ar">${esc(r[2])}</td><td class="num">${fmt(r[1])}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No rows with both a name and a price. Check the columns above.</td></tr>'}</tbody></table></div>
     ${I.sid && rows.length ? reportHtml(priceReport(I.sid, rows)) : ''}
     <div class="row"><button class="btn primary" id="mp-go" ${rows.length ? '' : 'disabled'}>Import ${rows.length.toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button></div>`;
-  box.querySelectorAll('[data-coluse]').forEach(sel => sel.onchange = () => { setUse(I, +sel.dataset.coluse, sel.value); renderMapping(); });
+  box.querySelectorAll('[data-coluse]').forEach(sel => sel.onchange = () => {
+    const c = +sel.dataset.coluse;
+    if (sel.value === '+new') {
+      const name = (prompt('Name for the new column', headText(I, c) || sample(c)) || '').trim();
+      if (!name) { renderMapping(); return; }
+      const same = userFields().find(f => f.name === name); // reuse a column with the same name
+      const id = same?.id || 'f' + Date.now().toString(36);
+      if (!same) saveField(id, { name, order: userFields().length });
+      setUse(I, c, 'f:' + id);
+    } else setUse(I, c, sel.value);
+    renderMapping();
+  });
+  box.querySelectorAll('[data-fieldname]').forEach(inp => inp.onchange = () => { const n = inp.value.trim(); if (n) saveField(inp.dataset.fieldname, { name: n }); renderMapping(); });
   box.querySelectorAll('[data-collabel]').forEach(inp => inp.onchange = () => { I.cols[+inp.dataset.collabel].label = inp.value.trim(); renderMapping(); });
   $('#mp-head').onchange = e => { I.header = e.target.checked; renderMapping(); };
   $('#mp-cancel').onclick = () => { S.importState = null; render(); };
@@ -952,9 +994,10 @@ async function exportPriceList(list, internal) {
   const sorted = [...list].sort((a, b) => (a.category || '').localeCompare(b.category || '', 'ar') || a.name.localeCompare(b.name, 'ar'));
   let aoa, widths, money;
   if (internal) {
-    aoa = [['Product', 'Details', 'Category', 'Suppliers', 'Best price', 'Best supplier', 'Buying from', 'Cost', 'Margin %', 'Sell price', 'Profit']];
-    sorted.forEach(p => aoa.push([p.name, p.detail, p.category, p.offers.map(o => `${o.sup}: ${o.price}`).join(' | '), p.best.price, p.best.sup, p.buy.sup, p.cost, +(p.margin * 100).toFixed(2), p.sell, +p.profit.toFixed(2)]));
-    widths = [50, 18, 22, 40, 11, 16, 16, 10, 9, 11, 10]; money = [4, 7, 9, 10];
+    const F = D.fields, k = F.length;
+    aoa = [['Product', 'Details', 'Category', 'Unit', ...F.map(f => f.name), 'Suppliers', 'Best price', 'Best supplier', 'Buying from', 'Cost', 'Margin %', 'Sell price', 'Profit']];
+    sorted.forEach(p => aoa.push([p.name, p.detail, p.category, p.unit, ...F.map(f => p.extra[f.id] ?? ''), p.offers.map(o => `${o.sup}: ${o.price}`).join(' | '), p.best.price, p.best.sup, p.buy.sup, p.cost, +(p.margin * 100).toFixed(2), p.sell, +p.profit.toFixed(2)]));
+    widths = [50, 18, 22, 10, ...F.map(() => 12), 40, 11, 16, 16, 10, 9, 11, 10]; money = [5, 8, 10, 11].map(c => c + k);
   } else {
     aoa = [];
     if (st.company) aoa.push([st.company]);
@@ -987,6 +1030,11 @@ function renderSettings(v) {
     ${D.cats.length ? `<div class="tablebox"><table><thead><tr><th>Category</th><th class="num">Products</th><th class="num">Margin %</th></tr></thead><tbody>${D.cats.map((c, i) => `<tr><td class="ar">${esc(c)}</td><td class="num">${D.products.filter(p => p.category === c).length}</td><td class="num"><input type="number" step="0.5" style="width:90px;text-align:right" data-catm="${i}" value="${st.catMargins[c] == null ? '' : pct(st.catMargins[c])}" placeholder="${pct(st.defaultMargin)}" aria-label="Category margin"></td></tr>`).join('')}</tbody></table></div>`
       : '<p class="muted">No categories yet. Set a category on any product and it appears here.</p>'}
   </div>
+  <div class="panel"><h2>Your columns</h2>
+    ${userFields().length ? `<p class="small muted">Columns you added while uploading. Renaming changes the name everywhere; removing hides the column (the uploaded values stay, so adding a column with the same name brings them back).</p>
+    <div class="tablebox"><table><thead><tr><th>Name</th><th class="num">Products with a value</th><th></th></tr></thead><tbody>${userFields().map(f => `<tr><td><input class="ar" data-fren="${esc(f.id)}" value="${esc(f.name)}" aria-label="Column name"></td><td class="num">${D.products.filter(p => p.extra[f.id] != null).length.toLocaleString()}</td><td><button class="btn small danger" data-fdel="${esc(f.id)}">Remove</button></td></tr>`).join('')}</tbody></table></div>`
+      : '<p class="muted">None yet. When you upload a list, choose <b>+ New column</b> for any column you want to keep under its own name.</p>'}
+  </div>
   <div class="panel"><h2>Backup</h2>
     <p class="muted">Download everything (supplier lists, matches, product edits, settings and saved quotes) as one file, or load a backup file. Loading adds the backup's data and replaces anything with the same name; nothing else is deleted.</p>
     <div class="row"><button class="btn" id="bk-get">Download backup</button>
@@ -994,6 +1042,11 @@ function renderSettings(v) {
       <span class="muted small" id="bk-status"></span></div>
   </div>`;
   $('#bk-get').onclick = downloadBackup;
+  document.querySelectorAll('[data-fren]').forEach(inp => inp.onchange = () => { const n = inp.value.trim(); if (n) saveField(inp.dataset.fren, { name: n }); else render(); });
+  document.querySelectorAll('[data-fdel]').forEach(btn => btn.onclick = () => {
+    if (!btn.classList.contains('armed')) { btn.classList.add('armed'); btn.textContent = 'Click again'; return; }
+    deleteField(btn.dataset.fdel); toast('Column removed');
+  });
   $('#bk-put').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); };
   const save = (patch, dbPatch = patch) => { S.settings = { ...settings(), ...patch }; setDoc('settings/main', dbPatch, MERGE); changed(); };
   $('#st-m').onchange = e => { const n = parseFloat(e.target.value); if (!isNaN(n)) save({ defaultMargin: n / 100 }); };
