@@ -29,3 +29,7 @@ Everything here is on free plans. It takes about 20 minutes, once.
 - Excel and CSV files import instantly. PDFs with real text import in seconds. Scanned PDFs and photos are read on the device and take up to about a minute per page; check names and prices before importing.
 - Free limits (Firestore Spark plan): 50,000 reads and 20,000 writes a day and 1 GB stored. A team of 3 to 4 people stays well inside this.
 - Keep the starting-data file out of the repository: a free GitHub Pages repository is public.
+
+## Checking the site (tests)
+
+The `tests` folder checks every tab and upload type in a browser, using small made-up price lists and a stand-in for Firebase, so it never touches your real data. GitHub runs it on every pull request. To run it on your computer, install Node.js, then in this folder run `npm install`, `npx playwright install chromium` and `npm test`.

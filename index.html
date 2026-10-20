@@ -125,6 +125,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 .gate { max-width: 520px; margin: 60px auto; }
 .who { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+[hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -255,11 +256,17 @@ function sellPrice(cost, m, st) {
 // ---------- matching suggestions ----------
 // Matcher (matcher.js) compares item names: words, sizes and pack words. Details such as a discount
 // column are left out, and a pair whose sizes differ is never suggested.
-let suggestCache = null;
+// Matching a big list takes about half a second, so it only runs again when the lists, links or
+// dismissed pairs change, not after a margin or quote edit.
+let suggestCache = null, suggestRaw = null, suggestSig = '';
 function suggestions() {
   if (suggestCache) return suggestCache;
-  const items = D.products.map(p => ({ pid: p.pid, name: p.offers[0].name, detail: p.offers[0].detail, sids: new Set(p.offers.map(o => o.sid)), price: p.best.price, p }));
-  return (suggestCache = Matcher.suggest(items, { dismissed: S.dismissed }).map(s => ({ ...s, a: s.a.p, b: s.b.p })));
+  const sig = Object.keys(S.dismissed).join(',') + '#' + D.products.map(p => p.pid + ':' + p.offers.map(o => o.key).join(',') + ':' + p.best.price).join('|');
+  if (sig !== suggestSig) {
+    const items = D.products.map(p => ({ pid: p.pid, name: p.offers[0].name, detail: p.offers[0].detail, sids: new Set(p.offers.map(o => o.sid)), price: p.best.price }));
+    suggestRaw = Matcher.suggest(items, { dismissed: S.dismissed }); suggestSig = sig;
+  }
+  return (suggestCache = suggestRaw.map(s => ({ ...s, a: D.byPid[s.a.pid], b: D.byPid[s.b.pid] })));
 }
 const likely = list => list.filter(s => s.level !== 'low');
 const LEVEL_TEXT = { high: 'Very likely', medium: 'Possible', low: 'Weak' };
@@ -395,6 +402,7 @@ const PAGE = 100;
 function renderProducts(v) {
   const st = settings();
   if (!D.products.length) { v.innerHTML = `<div class="panel"><h2>No price lists yet</h2><p class="muted">Add a supplier list on the Suppliers tab and its products show up here, ready to price.</p><div><button class="btn primary" data-go="suppliers">Add a supplier list</button></div></div>`; return; }
+  if (S.filter.startsWith('sup:') && !S.suppliers[S.filter.slice(4)]) S.filter = 'all'; // that list was deleted
   const list = filtered(), pages = Math.max(1, Math.ceil(list.length / PAGE));
   S.page = Math.min(S.page, pages - 1);
   const rows = list.slice(S.page * PAGE, S.page * PAGE + PAGE);
@@ -641,7 +649,8 @@ async function readImport(file) {
   if (/\.pdf$/i.test(file.name) || file.type.startsWith('image/')) return readVisual(file);
   if (typeof XLSX === 'undefined') { toast('The spreadsheet reader did not load. Reload the page and try again.'); return; }
   try {
-    const wb = /\.csv$/i.test(file.name) ? XLSX.read(await csvText(file), { type: 'string' }) : XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    // CSV cells stay text (raw) so "2,5" is read as 2.5 by parsePrice, not as 25, and names aren't turned into dates
+    const wb = /\.csv$/i.test(file.name) ? XLSX.read(await csvText(file), { type: 'string', raw: true }) : XLSX.read(await file.arrayBuffer(), { type: 'array' });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }).filter(r => r.some(c => String(c).trim() !== ''));
     if (!raw.length) { toast('That file has no rows.'); return; }
@@ -658,7 +667,9 @@ async function readImport(file) {
     const nameHead = byHead(/(اسم|الصنف|المنتج|البيان|الوصف|product|item|name|description)/i);
     const name = nameHead != null && nameHead !== price ? nameHead : cols.filter(c => c !== price).reduce((a, b) => txtScore(b) > txtScore(a) ? b : a, cols.find(c => c !== price) ?? 0);
     const cols2 = cols.map(c => ({ use: c === name ? 'name' : c === price ? 'price' : 'skip', label: '' }));
-    S.importState = { ...(S.importState || {}), file: file.name, rows: raw, width, header: true, cols: cols2 };
+    // no header when nothing reads like one and the first row already has a price
+    const header = priceHead != null || nameHead != null || !(typeof raw[0][price] === 'number' || TableReader.isNumber(String(raw[0][price] ?? '')));
+    S.importState = { ...(S.importState || {}), file: file.name, rows: raw, width, header, cols: cols2 };
     applySavedColumns(S.importState);
     renderMapping();
   } catch (e) { console.error(e); toast('Could not read that file. Save it as .xlsx or .csv and try again.'); }
@@ -1089,7 +1100,7 @@ async function restoreBackup(file) {
         if (path === 'matching/links' || path === 'matching/dismissed') {
           // keep matches people made here and add the backup's on top
           batch.set(S.db.doc(path), { map: d.map || {} }, MERGE);
-        } else batch.set(S.db.doc(path), path.startsWith('items/') ? { ...d, rows: rowsToDb(d.rows || []) } : d);
+        } else batch.set(S.db.doc(path), path.startsWith('items/') ? { ...d, rows: rowsToDb(rowsFromDb(d.rows)) } : d);
       }
       if (status) status.textContent = `Loading… ${Math.min(i + 100, entries.length)} of ${entries.length}`;
       await batch.commit();
