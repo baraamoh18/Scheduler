@@ -149,7 +149,9 @@ const fmt = n => (n == null || isNaN(n)) ? '–' : Number(n).toLocaleString('en-
 const pct = m => (m == null || isNaN(m)) ? '' : +(m * 100).toFixed(2);
 const settings = () => Object.assign({}, DEFAULTS, S.settings || {});
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2600); }
-function loadDraft() { try { return JSON.parse(localStorage.getItem('quoteDraft')) || newQuote(); } catch { return newQuote(); } }
+function loadDraft() {
+  try { const q = JSON.parse(localStorage.getItem('quoteDraft')); if (q) q.lines.forEach(l => l.manual ??= l.price != null); return q || newQuote(); } catch { return newQuote(); }
+}
 function saveDraft() { try { localStorage.setItem('quoteDraft', JSON.stringify(S.quote)); } catch {} }
 function newQuote() { return { id: null, customer: '', date: new Date().toISOString().slice(0, 10), notes: '', lines: [] }; }
 
@@ -195,7 +197,8 @@ function derive() {
     p.category = ov.category ?? (p.offers.find(o => o.category)?.category || '');
     p.unit = ov.unit || '';
     if (p.category) cats.add(p.category);
-    const sorted = [...p.offers].sort((a, b) => a.price - b.price);
+    const priced = p.offers.filter(o => o.price > 0); // a 0 or missing price is never the cheapest
+    const sorted = [...(priced.length ? priced : p.offers)].sort((a, b) => a.price - b.price);
     p.best = sorted[0]; p.high = sorted[sorted.length - 1];
     p.nSup = new Set(p.offers.map(o => o.sid)).size;
     p.chosenSid = ov.chosen || '';
@@ -259,11 +262,18 @@ function write(path, fn) {
   });
   queues[path] = run; return run;
 }
-async function setDoc(path, data) { if (!S.db) { toast('Sign in to save changes.'); return; } return write(path, () => S.db.doc(path).set(data)); }
+async function setDoc(path, data, opts) { if (!S.db) { toast('Sign in to save changes.'); return; } return write(path, () => S.db.doc(path).set(data, opts || {})); }
 async function delDoc(path) { if (S.db) return write(path, () => S.db.doc(path).delete()); }
-function saveLinks() { return setDoc('matching/links', { map: S.links }); }
-function saveDismissed() { return setDoc('matching/dismissed', { map: S.dismissed }); }
-function saveOv(pid) { const ov = S.prodOv[pid]; return ov && Object.keys(ov).length ? setDoc('products/' + pid, ov) : delDoc('products/' + pid); }
+// Shared docs are saved field by field (merge), so two people editing at once don't erase each other's changes.
+const MERGE = { merge: true };
+const DEL = () => firebase.firestore.FieldValue.delete();
+function saveLinks(keys) { return setDoc('matching/links', { map: Object.fromEntries(keys.map(k => [k, S.links[k]])) }, MERGE); }
+function saveDismissed(pk) { return setDoc('matching/dismissed', { map: { [pk]: true } }, MERGE); }
+// fields: the product fields that changed; a field missing from S.prodOv[pid] is removed
+function saveOv(pid, fields) {
+  const ov = S.prodOv[pid] || {};
+  return setDoc('products/' + pid, Object.fromEntries(fields.map(f => [f, ov[f] ?? DEL()])), MERGE);
+}
 
 let renderPending = false;
 function changed() {
@@ -470,7 +480,7 @@ function openProduct(pid) {
     for (const [f, id] of [['name', 'pd-name'], ['detail', 'pd-detail'], ['category', 'pd-cat'], ['unit', 'pd-unit']]) {
       const val = $('#' + id).value.trim(); if (val) next[f] = val; else delete next[f];
     }
-    S.prodOv[pid] = next; saveOv(pid); changed(); toast('Product details saved'); dlg.close();
+    S.prodOv[pid] = next; saveOv(pid, ['name', 'detail', 'category', 'unit']); changed(); toast('Product details saved'); dlg.close();
   };
   const s = $('#pd-search');
   s.oninput = () => {
@@ -486,9 +496,9 @@ function linkRows(list, p) {
 function merge(fromPid, intoPid) {
   const from = D.byPid[fromPid]; if (!from) return;
   from.offers.forEach(o => S.links[o.key] = intoPid);
-  saveLinks(); changed(); toast('Linked. Prices are now compared side by side.');
+  saveLinks(from.offers.map(o => o.key)); changed(); toast('Linked. Prices are now compared side by side.');
 }
-function split(key) { S.links[key] = 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); saveLinks(); changed(); toast('Separated into its own product'); }
+function split(key) { S.links[key] = 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); saveLinks([key]); changed(); toast('Separated into its own product'); }
 
 // ---------- matching ----------
 function renderMatching(v) {
@@ -531,19 +541,25 @@ function renderSuppliers(v) {
   if (I?.rows) renderMapping();
   if (I?.visual) renderVisual();
 }
+// CSV files are usually UTF-8; older Arabic Excel saves them as Windows-1256. Read them as text so Arabic survives.
+async function csvText(file) {
+  const buf = await file.arrayBuffer();
+  const utf8 = new TextDecoder('utf-8').decode(buf);
+  return utf8.includes('\uFFFD') ? new TextDecoder('windows-1256').decode(buf) : utf8.replace(/^\uFEFF/, '');
+}
 async function readImport(file) {
   if (!file) return;
   if (/\.pdf$/i.test(file.name) || file.type.startsWith('image/')) return readVisual(file);
   if (typeof XLSX === 'undefined') { toast('The spreadsheet reader did not load. Reload the page and try again.'); return; }
   try {
-    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const wb = /\.csv$/i.test(file.name) ? XLSX.read(await csvText(file), { type: 'string' }) : XLSX.read(await file.arrayBuffer(), { type: 'array' });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }).filter(r => r.some(c => String(c).trim() !== ''));
     if (!raw.length) { toast('That file has no rows.'); return; }
     const width = Math.max(...raw.map(r => r.length));
     const sample = raw.slice(1, 60);
-    const numScore = c => sample.filter(r => r[c] !== '' && !isNaN(parseFloat(String(r[c]).replace(/[٠-٩]/g, d => AR_DIG.indexOf(d)).replace(/,/g, '')))).length;
-    const txtScore = c => sample.reduce((s, r) => s + (isNaN(parseFloat(r[c])) ? String(r[c]).length : 0), 0);
+    const numScore = c => sample.filter(r => r[c] !== '' && TableReader.isNumber(String(r[c]))).length;
+    const txtScore = c => sample.reduce((s, r) => s + (TableReader.isNumber(String(r[c])) ? 0 : String(r[c]).length), 0);
     const cols = [...Array(width).keys()];
     const price = cols.reduce((a, b) => numScore(b) > numScore(a) ? b : a, 0);
     const name = cols.filter(c => c !== price).reduce((a, b) => txtScore(b) > txtScore(a) ? b : a, cols.find(c => c !== price) ?? 0);
@@ -587,7 +603,7 @@ function renderVisual() { cancelAnimationFrame(visualTimer); visualTimer = reque
 function drawVisual() {
   const I = S.importState, box = $('#im-map'); if (!box || !I?.visual) return;
   const V = I.visual, PER = 100;
-  const bad = V.rows.filter(r => !r.name || isNaN(r.price)).length;
+  const bad = V.rows.filter(r => !r.name || !(r.price > 0)).length;
   const scanned = V.pages.some(p => p.mode === 'scan');
   V.view = Math.min(V.view || 0, Math.max(0, Math.ceil(V.rows.length / PER) - 1));
   const shown = V.rows.slice(V.view * PER, V.view * PER + PER);
@@ -598,7 +614,7 @@ function drawVisual() {
     ${V.pages.length ? `<div class="chips">${V.pages.map(p => `<span class="chip ${p.count ? 'best' : 'warn'}" title="${p.mode === 'scan' ? 'Read from the page image' : 'Read from the PDF text'}">Page ${p.n}: ${p.count} rows${p.mode === 'scan' ? ' · scanned' : ''}</span>`).join('')}</div>` : ''}
     ${V.rows.length ? `<p class="small muted">Check the rows against the file, especially prices${scanned ? ' and names on scanned pages' : ''}. Fix anything here before importing; you can also rename products later.</p>
     <div class="tablebox"><table><thead><tr><th>Page</th><th>Item</th><th>Details</th><th class="num">Price</th><th></th></tr></thead><tbody>
-      ${shown.map((r, i) => { const k = V.view * PER + i; return `<tr><td class="muted">${r.page}</td><td><input class="ar" style="width:100%;min-width:220px" data-vrow="${k}" data-vf="name" value="${esc(r.name)}" aria-label="Item name"></td><td><input class="ar" style="width:130px" data-vrow="${k}" data-vf="detail" value="${esc(r.detail)}" aria-label="Details"></td><td class="num"><input type="number" step="0.01" style="width:100px;text-align:right${isNaN(r.price) ? ';border-color:var(--danger)' : ''}" data-vrow="${k}" data-vf="price" value="${isNaN(r.price) ? '' : r.price}" aria-label="Price"></td><td><button class="btn small" data-vdel="${k}">Remove</button></td></tr>`; }).join('')}
+      ${shown.map((r, i) => { const k = V.view * PER + i; return `<tr><td class="muted">${r.page}</td><td><input class="ar" style="width:100%;min-width:220px" data-vrow="${k}" data-vf="name" value="${esc(r.name)}" aria-label="Item name"></td><td><input class="ar" style="width:130px" data-vrow="${k}" data-vf="detail" value="${esc(r.detail)}" aria-label="Details"></td><td class="num"><input type="number" step="0.01" style="width:100px;text-align:right${r.price > 0 ? '' : ';border-color:var(--danger)'}" data-vrow="${k}" data-vf="price" value="${isNaN(r.price) ? '' : r.price}" aria-label="Price"></td><td><button class="btn small" data-vdel="${k}">Remove</button></td></tr>`; }).join('')}
     </tbody></table>
     <div class="pager"><span class="muted small">Rows ${V.view * PER + 1}–${V.view * PER + shown.length} of ${V.rows.length.toLocaleString()}</span><button class="btn small" data-vpage="-1" ${V.view ? '' : 'disabled'}>Previous</button><button class="btn small" data-vpage="1" ${(V.view + 1) * PER < V.rows.length ? '' : 'disabled'}>Next</button></div></div>` : ''}
     <div class="row"><button class="btn primary" id="mp-go" ${V.done && V.rows.length && !bad ? '' : 'disabled'}>Import ${(V.rows.length - bad).toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button>${bad ? `<span class="chip warn">${bad} rows need a price</span>` : ''}
@@ -621,9 +637,9 @@ document.addEventListener('click', e => {
 function parsedRows() {
   const I = S.importState; const m = I.map;
   const body = I.header ? I.rows.slice(1) : I.rows;
-  const num = x => parseFloat(String(x).replace(/[٠-٩]/g, d => AR_DIG.indexOf(d)).replace(/٫/g, '.').replace(/[^\d.\-]/g, ''));
+  const num = x => typeof x === 'number' ? x : TableReader.parsePrice(x);
   return body.map((r, i) => [String(r[m.name] ?? '').trim(), num(r[m.price]), m.detail >= 0 ? String(r[m.detail] ?? '').trim() : '', 'row ' + (i + (I.header ? 2 : 1)), m.category >= 0 ? String(r[m.category] ?? '').trim() : ''])
-    .filter(r => r[0] && !isNaN(r[1]));
+    .filter(r => r[0] && r[1] > 0);
 }
 function renderMapping() {
   const I = S.importState, box = $('#im-map'); if (!box) return;
@@ -682,6 +698,9 @@ function renderQuote(v) {
   const st = settings(), Q = S.quote, lines = quoteLines();
   const total = lines.reduce((s, l) => s + l.total, 0), cost = lines.reduce((s, l) => s + l.cost, 0);
   const saved = Object.values(S.quotes).sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
+  // a saved quote keeps the prices it was sent with; flag lines whose price list has moved since
+  const moved = l => l.p && l.price != null && !l.manual && Math.abs(l.price - l.p.sell) >= 0.005;
+  const anyMoved = lines.some(moved);
   v.innerHTML = `<div class="panel">
     <div class="row" style="justify-content:space-between"><h2>${Q.id ? 'Quote for ' + esc(Q.customer || 'customer') : 'New customer quote'}</h2>
       <div class="row"><button class="btn" id="qt-new">Start a new quote</button><button class="btn" id="qt-save">Save quote</button><button class="btn primary" id="qt-xlsx" ${lines.length ? '' : 'disabled'}>Download Excel for customer</button></div></div>
@@ -690,6 +709,7 @@ function renderQuote(v) {
       <div class="field"><label for="qt-date">Date</label><input id="qt-date" type="date" value="${esc(Q.date)}"></div>
       <div class="field"><label for="qt-notes">Notes for the customer</label><input id="qt-notes" value="${esc(Q.notes)}" placeholder="e.g. Prices valid for 7 days"></div>
     </div>
+    ${anyMoved ? `<p class="note">Some prices have changed since this quote was saved. The quote keeps the prices it was saved with; today's price is shown under each one. <button class="btn small" id="qt-today">Use today's prices</button></p>` : ''}
     <div class="field"><label for="qt-add">Add a product</label><input id="qt-add" type="search" placeholder="Search by name"></div>
     <div class="tablebox" id="qt-results" hidden><table><tbody></tbody></table></div>
   </div>
@@ -697,7 +717,7 @@ function renderQuote(v) {
     <thead><tr><th>Product</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Total</th><th class="num">Your cost</th><th></th></tr></thead>
     <tbody>${lines.map((l, i) => `<tr><td class="pname"><div class="ar" style="font-weight:500">${esc(l.name)}</div>${l.detail ? `<div class="det">${esc(l.detail)}</div>` : ''}${l.p ? '' : '<span class="chip warn">no longer in a price list</span>'}</td>
       <td class="num"><input type="number" min="0" step="1" style="width:80px;text-align:right" data-qty="${i}" value="${esc(l.qty)}" aria-label="Quantity"></td>
-      <td class="num"><input type="number" min="0" step="0.01" style="width:100px;text-align:right" data-uprice="${i}" value="${l.price ?? ''}" placeholder="${fmt(l.p?.sell)}" aria-label="Unit price"></td>
+      <td class="num"><input type="number" min="0" step="0.01" style="width:100px;text-align:right" data-uprice="${i}" value="${l.price ?? ''}" placeholder="${fmt(l.p?.sell)}" aria-label="Unit price">${moved(l) ? `<div class="small muted">today ${fmt(l.p.sell)}</div>` : ''}</td>
       <td class="num sell">${fmt(l.total)}</td><td class="num muted">${fmt(l.cost)}</td><td><button class="btn small" data-rmq="${i}">Remove</button></td></tr>`).join('') || `<tr><td colspan="6" class="empty">Add products from the search above or with "Add to quote" on the Products tab.</td></tr>`}
     ${lines.length ? `<tr class="qtotal"><td>Total (${esc(st.currency)})</td><td></td><td></td><td class="num">${fmt(total)}</td><td class="num">${fmt(cost)}</td><td class="small">profit ${fmt(total - cost)}</td></tr>` : ''}</tbody>
   </table></div>
@@ -709,6 +729,8 @@ function renderQuote(v) {
   $('#qt-new').onclick = () => { S.quote = newQuote(); saveDraft(); render(); };
   $('#qt-save').onclick = saveQuote;
   $('#qt-xlsx').onclick = exportQuote;
+  const today = $('#qt-today');
+  if (today) today.onclick = () => { S.quote.lines.forEach(l => { if (!l.manual && D.byPid[l.pid]) l.price = null; }); saveDraft(); render(); toast("Updated to today's prices. Save the quote to keep them."); };
   const add = $('#qt-add');
   add.oninput = () => {
     const q = norm(add.value), box = $('#qt-results');
@@ -726,7 +748,8 @@ function addToQuote(pid) {
 async function saveQuote() {
   const Q = S.quote; if (!Q.lines.length) { toast('Add at least one product first.'); return; }
   Q.id ||= 'q-' + Date.now().toString(36);
-  Q.lines = quoteLines().map(l => ({ pid: l.pid, qty: +l.qty || 0, price: l.price === '' ? null : l.price, name: l.name, detail: l.detail }));
+  // freeze each line's unit price so reopening the quote shows what the customer was given
+  Q.lines = quoteLines().map(l => ({ pid: l.pid, qty: +l.qty || 0, price: l.unit == null || isNaN(l.unit) ? null : l.unit, manual: !!l.manual, name: l.name, detail: l.detail }));
   saveDraft();
   await setDoc('quotes/' + Q.id, { customer: Q.customer, date: Q.date, notes: Q.notes, lines: Q.lines, updated: new Date().toISOString() });
   toast('Quote saved'); render();
@@ -812,7 +835,7 @@ function renderSettings(v) {
   </div>`;
   $('#bk-get').onclick = downloadBackup;
   $('#bk-put').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); };
-  const save = patch => { S.settings = { ...settings(), ...patch }; setDoc('settings/main', S.settings); changed(); };
+  const save = (patch, dbPatch = patch) => { S.settings = { ...settings(), ...patch }; setDoc('settings/main', dbPatch, MERGE); changed(); };
   $('#st-m').onchange = e => { const n = parseFloat(e.target.value); if (!isNaN(n)) save({ defaultMargin: n / 100 }); };
   $('#st-mode').onchange = e => save({ mode: e.target.value });
   $('#st-round').onchange = e => save({ round: +e.target.value });
@@ -820,7 +843,8 @@ function renderSettings(v) {
   $('#st-co').onchange = e => save({ company: e.target.value.trim() });
   document.querySelectorAll('[data-catm]').forEach(inp => inp.onchange = () => {
     const c = D.cats[+inp.dataset.catm], cm = { ...settings().catMargins }, n = parseFloat(inp.value);
-    if (isNaN(n)) delete cm[c]; else cm[c] = n / 100; save({ catMargins: cm });
+    if (isNaN(n)) delete cm[c]; else cm[c] = n / 100;
+    save({ catMargins: cm }, { catMargins: { [c]: isNaN(n) ? DEL() : n / 100 } });
   });
 }
 
@@ -851,8 +875,7 @@ async function restoreBackup(file) {
       for (const [path, d] of entries.slice(i, i + 100)) {
         if (path === 'matching/links' || path === 'matching/dismissed') {
           // keep matches people made here and add the backup's on top
-          const cur = path.endsWith('links') ? S.links : S.dismissed;
-          batch.set(S.db.doc(path), { map: { ...cur, ...(d.map || {}) } });
+          batch.set(S.db.doc(path), { map: d.map || {} }, MERGE);
         } else batch.set(S.db.doc(path), path.startsWith('items/') ? { ...d, rows: rowsToDb(d.rows || []) } : d);
       }
       if (status) status.textContent = `Loading… ${Math.min(i + 100, entries.length)} of ${entries.length}`;
@@ -872,11 +895,11 @@ document.addEventListener('click', e => {
   else if (d.addq) addToQuote(d.addq);
   else if (d.merge) { merge(d.merge, d.into); const dlg = $('#dlg'); if (dlg.open) { dlg.close(); openProduct(d.into); } }
   else if (d.split) { split(d.split); $('#dlg').close(); }
-  else if (d.dismiss) { S.dismissed[d.dismiss] = true; saveDismissed(); changed(); }
+  else if (d.dismiss) { S.dismissed[d.dismiss] = true; saveDismissed(d.dismiss); changed(); }
   else if (d.delSup) deleteSupplier(d.delSup, t);
   else if (d.updateSup) { S.importState = { sid: d.updateSup }; render(); $('#import').scrollIntoView({ behavior: 'smooth' }); }
   else if (d.rmq) { S.quote.lines.splice(+d.rmq, 1); saveDraft(); render(); }
-  else if (d.loadq) { const q = S.quotes[d.loadq]; S.quote = { id: q.id, customer: q.customer, date: q.date, notes: q.notes || '', lines: q.lines.map(l => ({ ...l })) }; saveDraft(); render(); }
+  else if (d.loadq) { const q = S.quotes[d.loadq]; S.quote = { id: q.id, customer: q.customer, date: q.date, notes: q.notes || '', lines: q.lines.map(l => ({ ...l, manual: l.manual ?? l.price != null })) }; saveDraft(); render(); }
   else if (d.delq) {
     if (!t.classList.contains('armed')) { t.classList.add('armed'); t.textContent = 'Click again'; return; }
     delDoc('quotes/' + d.delq); if (S.quote.id === d.delq) S.quote.id = null; toast('Quote deleted');
@@ -884,10 +907,10 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target, d = t.dataset;
-  if (d.pid && t.classList.contains('buy')) { const ov = { ...(S.prodOv[d.pid] || {}) }; if (t.value) ov.chosen = t.value; else delete ov.chosen; S.prodOv[d.pid] = ov; saveOv(d.pid); changed(); }
-  else if (d.pid && t.classList.contains('margin')) { const ov = { ...(S.prodOv[d.pid] || {}) }; const n = parseFloat(t.value); if (isNaN(n)) delete ov.margin; else ov.margin = n / 100; S.prodOv[d.pid] = ov; saveOv(d.pid); changed(); }
+  if (d.pid && t.classList.contains('buy')) { const ov = { ...(S.prodOv[d.pid] || {}) }; if (t.value) ov.chosen = t.value; else delete ov.chosen; S.prodOv[d.pid] = ov; saveOv(d.pid, ['chosen']); changed(); }
+  else if (d.pid && t.classList.contains('margin')) { const ov = { ...(S.prodOv[d.pid] || {}) }; const n = parseFloat(t.value); if (isNaN(n)) delete ov.margin; else ov.margin = n / 100; S.prodOv[d.pid] = ov; saveOv(d.pid, ['margin']); changed(); }
   else if (d.qty != null) { S.quote.lines[+d.qty].qty = Math.max(0, parseFloat(t.value) || 0); saveDraft(); render(); }
-  else if (d.uprice != null) { const n = parseFloat(t.value); S.quote.lines[+d.uprice].price = isNaN(n) ? null : n; saveDraft(); render(); }
+  else if (d.uprice != null) { const n = parseFloat(t.value); const l = S.quote.lines[+d.uprice]; l.price = isNaN(n) ? null : n; l.manual = !isNaN(n); saveDraft(); render(); }
 });
 boot();
 </script>
