@@ -8,7 +8,7 @@
   const UNITS = new Set(['سم', 'م', 'مم', 'ملم', 'cm', 'mm', 'm', 'مل', 'ml', 'لتر', 'l', 'جم', 'جرام', 'جرامات', 'g', 'gm', 'gr', 'كجم', 'كيلو', 'kg', 'مجم', 'mg', 'مج', 'ميكرون', 'cc', 'سي', 'انش', 'بوصه', 'inch', 'x']);
   const LETTER_SIZES = /^(x{0,3}s|m|x{0,4}l|\dx?l|صغير|وسط|كبير|small|medium|large)$/;
   const PACKS = new Set(['توب', 'علبه', 'علب', 'كرتونه', 'كرتون', 'باكو', 'باكت', 'دسته', 'رول', 'رولات', 'لفه', 'قطعه', 'حبه', 'شريط', 'كيس', 'box', 'pack', 'pcs', 'roll']);
-  const STOP = new Set(['من', 'في', 'مع', 'و', 'عدد', 'نوع', 'لون']);
+  const STOP = new Set(['من', 'في', 'مع', 'و', 'عدد', 'نوع', 'لون', 'طول', 'عرض', 'مقاس', 'مقاسات']);
   // detail columns that describe the price, not the item (discount, stock, codes)
   const NOT_ITEM = /^(خصم|الخصم|نسبه|discount|رصيد|الرصيد|كميه|الكميه|qty|stock|سعر|السعر|price|بونص|bonus|كود|الكود|code|باركود|barcode|تاريخ|date)/i;
 
@@ -19,6 +19,7 @@
       .replace(/([؀-ۿ])\1{2,}/g, '$1').toLowerCase();
     for (const [re, to] of SYNONYMS) s = s.replace(re, to);
     return s.replace(/(\d)(?=[^\d.\s])|([^\d.\s])(?=\d)/g, '$1$2 ') // "10سم" -> "10 سم"
+      .replace(/([a-z])(?=[؀-ۿ])|([؀-ۿ])(?=[a-z])/g, '$1$2 ') // "Lشراب" -> "l شراب"
       .replace(/[*×\/\\+\-:()\[\]{}"'،,؛;|_]/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
@@ -41,6 +42,7 @@
 
   function near(a, b) { // one or two letters apart: spelling variants of the same word
     if (Math.min(a.length, b.length) < 4 || Math.abs(a.length - b.length) > 2) return false;
+    if (a.slice(0, 2) !== b.slice(0, 2)) return false; // رباعي and سباعي are different words
     const max = Math.min(a.length, b.length) >= 7 ? 2 : 1;
     let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
     for (let i = 1; i <= a.length; i++) {
@@ -52,9 +54,15 @@
     return prev[b.length] <= max;
   }
 
+  // true when one name lists every size of the other plus more, like "5 سم" and "5 سم طول 150م"
+  function extraSize(a, b) {
+    const [s, l] = a.length < b.length ? [a.split(' '), b.split(' ')] : [b.split(' '), a.split(' ')];
+    return s.length < l.length && s.every(x => { const i = l.indexOf(x); if (i < 0) return false; l.splice(i, 1); return true; });
+  }
+
   // Compares two described items. Returns null when they can't be the same product.
   function compare(A, B, w) {
-    if (A.sizes && B.sizes && A.sizes !== B.sizes) return null; // different size, length, count…
+    if (A.sizes && B.sizes && A.sizes !== B.sizes && !extraSize(A.sizes, B.sizes)) return null; // different size, length, count…
     if (A.letters && B.letters && A.letters !== B.letters) return null; // S vs XL
     const onlyA = A.words.filter(t => !B.words.includes(t)), onlyB = B.words.filter(t => !A.words.includes(t));
     let shared = A.words.filter(t => B.words.includes(t)).reduce((s, t) => s + w(t), 0);
@@ -92,7 +100,8 @@
         if (!c || c.score < minScore) continue;
         const notes = [];
         let level = c.jac >= 0.85 ? 2 : c.cont >= 0.75 ? 1 : 0;
-        if (A.sizes && B.sizes) notes.push({ ok: true, text: 'Same size ' + A.sizes.replace(/ /g, ' × ') });
+        if (A.sizes && B.sizes && A.sizes !== B.sizes) { notes.push({ text: `One name gives an extra size (${A.sizes.replace(/ /g, ' × ')} / ${B.sizes.replace(/ /g, ' × ')})` }); level = Math.min(level, 1); }
+        else if (A.sizes && B.sizes) notes.push({ ok: true, text: 'Same size ' + A.sizes.replace(/ /g, ' × ') });
         else if (A.sizes || B.sizes) { notes.push({ text: 'Only one name gives a size (' + (A.sizes || B.sizes).replace(/ /g, ' × ') + ')' }); level = Math.min(level, 1); }
         if (A.packs !== B.packs) { notes.push({ text: A.packs && B.packs ? `Pack differs: ${A.packs} / ${B.packs}` : `Only one name says the pack (${A.packs || B.packs})` }); level = Math.min(level, 1); }
         const lo = Math.min(a.price, b.price), hi = Math.max(a.price, b.price);
