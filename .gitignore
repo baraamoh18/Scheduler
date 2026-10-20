@@ -1,0 +1,3 @@
+# Backups hold your price data; keep them out of this public repo
+*backup*.json
+*starting-data*.json

@@ -1,1 +1,895 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Supply Price Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Readex+Pro:wght@500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="table-reader.js"></script>
+<script src="pdf-import.js"></script>
+<style>
+/* Layout: one working column; sticky header with tabs, then a toolbar and a dense, scannable table per tab. */
+:root {
+  --bg: #f4f6f4; --surface: #ffffff; --surface-2: #eef2ef; --ink: #18211d; --muted: #5b6862;
+  --line: #d9e0dc; --accent: #0b6b5f; --accent-ink: #ffffff; --accent-weak: #dcefea;
+  --best: #1d7438; --best-bg: #e2f2e5; --warn: #94570a; --warn-bg: #fbefdc; --danger: #a83232; --danger-bg: #f8e3e3;
+  --f-display: "Readex Pro", "IBM Plex Sans Arabic", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans Arabic", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111614; --surface: #19201d; --surface-2: #202825; --ink: #e4ebe7; --muted: #97a59e;
+  --line: #2c3632; --accent: #52c0ad; --accent-ink: #0b1714; --accent-weak: #163631;
+  --best: #74d08f; --best-bg: #17321f; --warn: #e6b062; --warn-bg: #352812; --danger: #f08b8b; --danger-bg: #3a1d1d;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111614; --surface: #19201d; --surface-2: #202825; --ink: #e4ebe7; --muted: #97a59e;
+  --line: #2c3632; --accent: #52c0ad; --accent-ink: #0b1714; --accent-weak: #163631;
+  --best: #74d08f; --best-bg: #17321f; --warn: #e6b062; --warn-bg: #352812; --danger: #f08b8b; --danger-bg: #3a1d1d;
+  color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.45; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap { max-width: 1280px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+header.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border-bottom: 1px solid var(--line); }
+.top .wrap { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding-block: 10px 0; }
+.brand { font-family: var(--f-display); font-weight: 600; font-size: 18px; letter-spacing: .01em; margin-right: auto; }
+.brand small { font-family: var(--f-body); font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 8px; }
+.sync { font-size: 12px; color: var(--muted); }
+nav.tabs { display: flex; gap: 2px; overflow-x: auto; width: 100%; }
+nav.tabs button { border: 0; background: none; color: var(--muted); font: 500 14px var(--f-body); padding: 10px 14px; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; }
+nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+nav.tabs .count { font-size: 11px; background: var(--surface-2); border-radius: 10px; padding: 1px 7px; margin-left: 6px; color: var(--muted); }
+main.wrap { padding-block: 18px 60px; display: grid; gap: 16px; }
+h2 { font-family: var(--f-display); font-weight: 600; font-size: 20px; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--f-display); font-weight: 500; font-size: 15px; margin: 0; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.row > .grow { flex: 1 1 220px; min-width: 0; }
+.stats { display: flex; gap: 22px; flex-wrap: wrap; }
+.stat b { display: block; font-family: var(--f-display); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12px; color: var(--muted); }
+input, select, textarea { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; min-width: 0; }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[type="number"] { font-variant-numeric: tabular-nums; }
+.btn { font: 500 13px var(--f-body); border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 7px 12px; cursor: pointer; white-space: nowrap; }
+.btn:hover { background: var(--surface-2); }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.btn.primary:hover { filter: brightness(1.07); }
+button.btn.danger { color: var(--danger); }
+button.btn.danger.armed { background: var(--danger); border-color: var(--danger); color: var(--surface); }
+button.btn.small { padding: 4px 9px; font-size: 12px; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.tablebox { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); padding: 9px 10px; border-bottom: 1px solid var(--line); background: var(--surface-2); white-space: nowrap; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+.ar { text-align: left; unicode-bidi: plaintext; }
+input.ar { direction: rtl; text-align: right; }
+.pname { min-width: 240px; max-width: 420px; }
+.pname button { all: unset; cursor: pointer; font-weight: 500; display: block; width: 100%; text-align: left; unicode-bidi: plaintext; }
+.pname button:hover { color: var(--accent); text-decoration: underline; }
+.pname .det { font-size: 12px; color: var(--muted); text-align: left; unicode-bidi: plaintext; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { font-size: 11.5px; border-radius: 4px; padding: 2px 7px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.chip.best { background: var(--best-bg); color: var(--best); font-weight: 600; }
+.chip.cat { background: var(--accent-weak); color: var(--accent); }
+.chip.warn { background: var(--warn-bg); color: var(--warn); }
+td input.margin { width: 74px; text-align: right; }
+td select.buy { max-width: 170px; }
+.sell { font-weight: 600; }
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 10px; flex-wrap: wrap; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.field { display: grid; gap: 4px; }
+.field label { font-size: 12px; color: var(--muted); font-weight: 500; }
+.supplier { display: grid; gap: 8px; }
+.supplier .name { font-family: var(--f-display); font-size: 17px; font-weight: 600; }
+.note { background: var(--accent-weak); color: var(--ink); border-radius: 6px; padding: 10px 12px; font-size: 13px; }
+.toast { position: fixed; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 6px; font-size: 13px; z-index: 30; max-width: calc(100% - 32px); }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); padding: 0; width: min(760px, calc(100% - 24px)); max-height: calc(100% - 40px); }
+dialog::backdrop { background: rgb(0 0 0 / .35); }
+.dlg { display: grid; gap: 14px; padding: 18px; }
+.dlg-head { display: flex; gap: 10px; align-items: flex-start; }
+.dlg-head h3 { flex: 1; font-size: 17px; }
+.match-row { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 10px; align-items: center; padding: 10px; border-bottom: 1px solid var(--line); }
+.match-row:last-child { border-bottom: 0; }
+.score { font-size: 12px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) { .match-row { grid-template-columns: 1fr; } .score { text-align: left; } }
+.qtotal td { font-weight: 600; background: var(--surface-2); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.gate { max-width: 520px; margin: 60px auto; }
+.who { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand">Supply Price Desk <small id="sub">Loading saved data…</small></div>
+    <span class="sync" id="sync"></span>
+    <span class="who" id="who" hidden><span id="who-email"></span><button class="btn small" id="signout">Sign out</button></span>
+    <nav class="tabs" role="tablist" id="tabs">
+      <button role="tab" data-tab="products" aria-selected="true">Products</button>
+      <button role="tab" data-tab="matching">Matching<span class="count" id="cnt-match">0</span></button>
+      <button role="tab" data-tab="suppliers">Suppliers<span class="count" id="cnt-sup">0</span></button>
+      <button role="tab" data-tab="quote">Customer quote<span class="count" id="cnt-quote">0</span></button>
+      <button role="tab" data-tab="settings">Settings</button>
+    </nav>
+  </div>
+</header>
+<main class="wrap" id="view"></main>
+<dialog id="dlg"></dialog>
+<div class="toast" id="toast" hidden></div>
 
+<script>
+'use strict';
+// ---------- state ----------
+const S = {
+  db: null, ready: false, gated: false,
+  suppliers: {}, chunks: {}, links: {}, dismissed: {}, prodOv: {}, settings: null, quotes: {},
+  tab: 'products', q: '', filter: 'all', cat: '', sort: 'name', page: 0,
+  quote: loadDraft(), importState: null,
+};
+const DEFAULTS = { defaultMargin: 0.2, mode: 'markup', round: 0, currency: 'ج.م', company: '', catMargins: {} };
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = n => (n == null || isNaN(n)) ? '–' : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = m => (m == null || isNaN(m)) ? '' : +(m * 100).toFixed(2);
+const settings = () => Object.assign({}, DEFAULTS, S.settings || {});
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2600); }
+function loadDraft() { try { return JSON.parse(localStorage.getItem('quoteDraft')) || newQuote(); } catch { return newQuote(); } }
+function saveDraft() { try { localStorage.setItem('quoteDraft', JSON.stringify(S.quote)); } catch {} }
+function newQuote() { return { id: null, customer: '', date: new Date().toISOString().slice(0, 10), notes: '', lines: [] }; }
+
+// ---------- text helpers ----------
+const AR_DIG = '٠١٢٣٤٥٦٧٨٩';
+function norm(s) {
+  return String(s || '').replace(/[٠-٩]/g, d => AR_DIG.indexOf(d)).replace(/٫/g, '.')
+    .replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ـ/g, '')
+    .replace(/([؀-ۿ])\1{2,}/g, '$1').toLowerCase().replace(/[()\[\]{}"'،,]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+const tokens = s => norm(s).split(/[\s*×xX\/\-+:]+/).filter(t => t && t !== 'م' && t !== 'سم');
+function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+
+// ---------- derived data ----------
+let D = { offers: [], products: [], byPid: {}, cats: [] };
+function supplierOrder() { return Object.values(S.suppliers).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name)); }
+function derive() {
+  const st = settings();
+  const offers = [];
+  for (const sup of supplierOrder()) {
+    const seen = {};
+    for (let c = 0; c < (sup.chunks || 0); c++) {
+      const ch = S.chunks[sup.id + '-' + c];
+      if (!ch) continue;
+      ch.forEach((r, i) => {
+        const [name, price, detail, source, category] = r;
+        const base = hash(norm(name) + '|' + norm(detail));
+        const n = (seen[base] = (seen[base] || 0) + 1);
+        const key = sup.id + ':' + base + '.' + n;
+        const own = 'o-' + sup.id + '-' + base + '-' + n;
+        offers.push({ key, sid: sup.id, sup: sup.name, name, price: +price, detail: detail || '', source: source || '', category: category || '', pid: S.links[key] || own });
+      });
+    }
+  }
+  const byPid = {};
+  for (const o of offers) (byPid[o.pid] ||= { pid: o.pid, offers: [] }).offers.push(o);
+  const cats = new Set();
+  for (const p of Object.values(byPid)) {
+    const ov = S.prodOv[p.pid] || {};
+    const first = p.offers[0];
+    p.name = ov.name || first.name;
+    p.detail = ov.detail ?? first.detail;
+    p.category = ov.category ?? (p.offers.find(o => o.category)?.category || '');
+    p.unit = ov.unit || '';
+    if (p.category) cats.add(p.category);
+    const sorted = [...p.offers].sort((a, b) => a.price - b.price);
+    p.best = sorted[0]; p.high = sorted[sorted.length - 1];
+    p.nSup = new Set(p.offers.map(o => o.sid)).size;
+    p.chosenSid = ov.chosen || '';
+    const chosen = p.chosenSid ? sorted.find(o => o.sid === p.chosenSid) : null;
+    p.buy = chosen || p.best;
+    p.cost = p.buy.price;
+    p.marginOv = ov.margin;
+    p.margin = ov.margin ?? st.catMargins[p.category] ?? st.defaultMargin;
+    p.sell = sellPrice(p.cost, p.margin, st);
+    p.profit = p.sell - p.cost;
+  }
+  D = { offers, byPid, products: Object.values(byPid), cats: [...cats].sort() };
+}
+function sellPrice(cost, m, st) {
+  let s = st.mode === 'margin' ? (m < 1 ? cost / (1 - m) : NaN) : cost * (1 + m);
+  if (st.round > 0) s = Math.ceil(s / st.round - 1e-9) * st.round;
+  return Math.round(s * 100) / 100;
+}
+
+// ---------- matching suggestions ----------
+let suggestCache = null;
+function suggestions() {
+  if (suggestCache) return suggestCache;
+  const prods = D.products;
+  const df = {}, toks = new Map();
+  for (const p of prods) { const t = new Set(tokens(p.name + ' ' + p.detail)); toks.set(p, t); t.forEach(x => df[x] = (df[x] || 0) + 1); }
+  const N = prods.length, w = t => Math.log(1 + N / df[t]);
+  const index = {};
+  for (const p of prods) toks.get(p).forEach(t => { if (df[t] < N * 0.08) (index[t] ||= []).push(p); });
+  const out = [], seenPair = new Set();
+  for (const a of prods) {
+    const sa = new Set(a.offers.map(o => o.sid)), ta = toks.get(a);
+    const cand = new Set();
+    ta.forEach(t => (index[t] || []).forEach(b => { if (b !== a) cand.add(b); }));
+    for (const b of cand) {
+      if (b.offers.some(o => sa.has(o.sid))) continue; // same supplier on both sides
+      const pk = [a.pid, b.pid].sort().join('|');
+      if (seenPair.has(pk) || S.dismissed[pk]) continue;
+      seenPair.add(pk);
+      const tb = toks.get(b); let inter = 0, uni = 0;
+      new Set([...ta, ...tb]).forEach(t => { const x = w(t); uni += x; if (ta.has(t) && tb.has(t)) inter += x; });
+      let score = uni ? inter / uni : 0;
+      const na = [...ta].filter(t => /\d/.test(t)).sort().join(' '), nb = [...tb].filter(t => /\d/.test(t)).sort().join(' ');
+      if (na !== nb) score *= 0.6; // sizes or counts differ, so probably a different variant
+      if (score >= 0.45) out.push({ a, b, score, pk });
+    }
+  }
+  out.sort((x, y) => y.score - x.score);
+  // keep each product's two strongest candidates so one item can't flood the list
+  const used = {};
+  const kept = out.filter(s => { const ok = (used[s.a.pid] || 0) < 2 && (used[s.b.pid] || 0) < 2; if (ok) { used[s.a.pid] = (used[s.a.pid] || 0) + 1; used[s.b.pid] = (used[s.b.pid] || 0) + 1; } return ok; });
+  return (suggestCache = kept);
+}
+
+// ---------- db ----------
+const queues = {};
+function write(path, fn) {
+  const run = (queues[path] || Promise.resolve()).then(fn).catch(e => {
+    console.error(e);
+    toast(e && e.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow, or delete an old supplier list.' : 'Could not save that change. Check your connection and try again.');
+  });
+  queues[path] = run; return run;
+}
+async function setDoc(path, data) { if (!S.db) { toast('Sign in to save changes.'); return; } return write(path, () => S.db.doc(path).set(data)); }
+async function delDoc(path) { if (S.db) return write(path, () => S.db.doc(path).delete()); }
+function saveLinks() { return setDoc('matching/links', { map: S.links }); }
+function saveDismissed() { return setDoc('matching/dismissed', { map: S.dismissed }); }
+function saveOv(pid) { const ov = S.prodOv[pid]; return ov && Object.keys(ov).length ? setDoc('products/' + pid, ov) : delDoc('products/' + pid); }
+
+let renderPending = false;
+function changed() {
+  suggestCache = null; derive();
+  const pi = S.pendingImport; // once a fresh import has arrived, show what can be matched
+  if (pi && S.suppliers[pi.sid]?.chunks === pi.chunks && [...Array(pi.chunks).keys()].every(c => S.chunks[pi.sid + '-' + c])) {
+    S.pendingImport = null; S.tab = suggestions().length ? 'matching' : 'products';
+  }
+  scheduleRender();
+}
+function scheduleRender() { if (renderPending) return; renderPending = true; requestAnimationFrame(() => { renderPending = false; render(); }); }
+
+// Firestore can't hold arrays inside arrays, so each row is stored as {n, p, d, s, c}.
+const rowsToDb = rows => rows.map(([n, p, d, s, c]) => ({ n: n ?? '', p: +p, d: d ?? '', s: s ?? '', c: c ?? '' }));
+const rowsFromDb = rows => (rows || []).map(r => Array.isArray(r) ? r : [r.n, r.p, r.d, r.s, r.c]);
+const configured = () => { const c = window.FIREBASE_CONFIG; return c && c.apiKey && !/PASTE/i.test(c.apiKey); };
+let unsubs = [];
+
+function gate(html) { S.ready = false; S.gated = true; $('#view').innerHTML = `<div class="panel gate">${html}</div>`; }
+function showSignIn(msg) {
+  gate(`<h2>Sign in to Supply Price Desk</h2>
+    <p class="muted">${msg || 'Use the Google account your team added to the list. Prices and quotes are shared between everyone on the team.'}</p>
+    <div><button class="btn primary" id="signin">Sign in with Google</button></div>`);
+  $('#signin').onclick = async () => {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    if (firebase.auth().currentUser) await firebase.auth().signOut();
+    firebase.auth().signInWithPopup(provider).catch(e => {
+      if (e?.code === 'auth/popup-blocked' || e?.code === 'auth/operation-not-supported-in-this-environment') return firebase.auth().signInWithRedirect(provider);
+      if (e?.code !== 'auth/popup-closed-by-user' && e?.code !== 'auth/cancelled-popup-request') toast(e?.code === 'auth/unauthorized-domain' ? 'This web address is not allowed yet. Add it under Authentication > Settings > Authorized domains in Firebase.' : 'Sign-in did not work. Try again.');
+    });
+  };
+}
+
+async function boot() {
+  render();
+  if (typeof firebase === 'undefined') { gate(`<h2>Could not load</h2><p class="muted">The sign-in service did not load. Check your connection and reload the page.</p>`); return; }
+  if (!configured()) { gate(`<h2>Almost ready</h2><p class="muted">This copy of Supply Price Desk is not connected to a Firebase project yet. Paste your project's web app settings into <b>firebase-config.js</b>, as described in SETUP.md, then reload.</p>`); return; }
+  firebase.initializeApp(window.FIREBASE_CONFIG);
+  const db = firebase.firestore();
+  try { await db.enablePersistence({ synchronizeTabs: true }); } catch (e) { /* another tab or a private window; works online only */ }
+  $('#signout').onclick = () => firebase.auth().signOut();
+  firebase.auth().onAuthStateChanged(user => {
+    unsubs.forEach(u => u()); unsubs = []; S.db = null;
+    $('#who').hidden = !user; $('#who-email').textContent = user?.email || '';
+    if (!user) { $('#sub').textContent = ''; showSignIn(); return; }
+    S.ready = false; S.gated = false; render();
+    listen(db);
+  });
+}
+
+function listen(db) {
+  S.db = db;
+  const err = e => {
+    console.error(e);
+    unsubs.forEach(u => u()); unsubs = [];
+    if (e?.code === 'permission-denied') {
+      S.db = null;
+      showSignIn(`<b>${esc(firebase.auth().currentUser?.email)}</b> is not on this team's list. Ask the person who set up the site to add your email, or sign out and use another account.`);
+      $('#signin').textContent = 'Use another Google account';
+    } else $('#sync').textContent = 'Live updates paused. Reload to reconnect.';
+  };
+  let pending = 6; const loaded = () => { if (--pending === 0) { S.ready = true; changed(); } };
+  const once = f => { let done = false; return (...a) => { f(...a); if (!done) { done = true; loaded(); } else changed(); }; };
+  unsubs.push(
+    db.collection('suppliers').onSnapshot(once(s => { S.suppliers = {}; s.docs.forEach(d => S.suppliers[d.id] = { id: d.id, ...d.data() }); }), err),
+    db.collection('items').onSnapshot(once(s => { S.chunks = {}; s.docs.forEach(d => S.chunks[d.id] = rowsFromDb(d.data().rows)); }), err),
+    db.collection('products').onSnapshot(once(s => { S.prodOv = {}; s.docs.forEach(d => S.prodOv[d.id] = { ...d.data() }); }), err),
+    db.collection('quotes').onSnapshot(once(s => { S.quotes = {}; s.docs.forEach(d => S.quotes[d.id] = { id: d.id, ...d.data() }); }), err),
+    db.collection('matching').onSnapshot(once(s => {
+      S.links = {}; S.dismissed = {};
+      s.docs.forEach(d => { if (d.id === 'links') S.links = { ...(d.data().map || {}) }; if (d.id === 'dismissed') S.dismissed = { ...(d.data().map || {}) }; });
+    }), err),
+    db.doc('settings/main').onSnapshot(once(d => { S.settings = d.exists ? d.data() : null; }), err),
+  );
+}
+
+// ---------- render ----------
+function render() {
+  if (S.gated) return;
+  document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === S.tab));
+  $('#cnt-sup').textContent = Object.keys(S.suppliers).length;
+  $('#cnt-quote').textContent = S.quote.lines.length;
+  $('#cnt-match').textContent = S.ready && D.products.length ? suggestions().length : 0;
+  if (S.ready) $('#sub').textContent = `${D.products.length.toLocaleString()} products from ${Object.keys(S.suppliers).length} suppliers`;
+  const v = $('#view');
+  if (!S.ready) { v.innerHTML = `<div class="panel"><h2>Loading your price lists…</h2><p class="muted">Products, suppliers and quotes appear here once your saved data arrives.</p></div>`; return; }
+  ({ products: renderProducts, matching: renderMatching, suppliers: renderSuppliers, quote: renderQuote, settings: renderSettings })[S.tab](v);
+}
+
+function filtered() {
+  const q = norm(S.q);
+  let list = D.products.filter(p => {
+    if (S.filter === 'multi' && p.nSup < 2) return false;
+    if (S.filter.startsWith('sup:') && !p.offers.some(o => o.sid === S.filter.slice(4))) return false;
+    if (S.cat && p.category !== S.cat) return false;
+    return !q || norm(p.name + ' ' + p.detail + ' ' + p.category).includes(q);
+  });
+  const by = { name: (a, b) => a.name.localeCompare(b.name, 'ar'), best: (a, b) => a.best.price - b.best.price, bestd: (a, b) => b.best.price - a.best.price, offers: (a, b) => b.nSup - a.nSup || a.name.localeCompare(b.name, 'ar'), saving: (a, b) => (b.high.price - b.best.price) - (a.high.price - a.best.price) }[S.sort];
+  return list.sort(by);
+}
+
+const PAGE = 100;
+function renderProducts(v) {
+  const st = settings();
+  if (!D.products.length) { v.innerHTML = `<div class="panel"><h2>No price lists yet</h2><p class="muted">Add a supplier list on the Suppliers tab and its products show up here, ready to price.</p><div><button class="btn primary" data-go="suppliers">Add a supplier list</button></div></div>`; return; }
+  const list = filtered(), pages = Math.max(1, Math.ceil(list.length / PAGE));
+  S.page = Math.min(S.page, pages - 1);
+  const rows = list.slice(S.page * PAGE, S.page * PAGE + PAGE);
+  const multi = D.products.filter(p => p.nSup > 1).length;
+  const sups = supplierOrder();
+  v.innerHTML = `
+  <div class="row" style="justify-content:space-between;align-items:flex-end">
+    <div class="stats">
+      <div class="stat"><b>${D.products.length.toLocaleString()}</b><span>products</span></div>
+      <div class="stat"><b>${multi}</b><span>compared across suppliers</span></div>
+      <div class="stat"><b>${pct(st.defaultMargin)}%</b><span>default ${st.mode === 'margin' ? 'margin on sale price' : 'markup on cost'}</span></div>
+    </div>
+    <div class="row">
+      <button class="btn" id="exp-cust">Customer price list (.xlsx)</button>
+      <button class="btn" id="exp-int">Full costing sheet (.xlsx)</button>
+    </div>
+  </div>
+  <div class="row">
+    <input class="grow" id="q" type="search" placeholder="Search products, e.g. جاون or شاش" value="${esc(S.q)}" aria-label="Search products">
+    <select id="filter" aria-label="Show">
+      <option value="all">All products</option>
+      <option value="multi">Sold by 2+ suppliers</option>
+      ${sups.map(s => `<option value="sup:${esc(s.id)}">Only ${esc(s.name)}</option>`).join('')}
+    </select>
+    <select id="cat" aria-label="Category"><option value="">All categories</option>${D.cats.map(c => `<option>${esc(c)}</option>`).join('')}</select>
+    <select id="sort" aria-label="Sort">
+      <option value="name">Sort by name</option><option value="best">Lowest price first</option><option value="bestd">Highest price first</option>
+      <option value="offers">Most suppliers first</option><option value="saving">Biggest saving first</option>
+    </select>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>Product</th><th>Supplier prices</th><th>Buy from</th><th class="num">Cost</th><th class="num">Margin %</th><th class="num">Sell price</th><th class="num">Profit</th><th></th></tr></thead>
+      <tbody>${rows.map(rowHtml).join('') || `<tr><td colspan="8" class="empty">No products match. Clear the search or filters to see everything.</td></tr>`}</tbody>
+    </table>
+    <div class="pager"><span class="muted small">${list.length.toLocaleString()} shown · page ${S.page + 1} of ${pages}</span>
+      <button class="btn small" id="prev" ${S.page ? '' : 'disabled'}>Previous</button><button class="btn small" id="next" ${S.page < pages - 1 ? '' : 'disabled'}>Next</button></div>
+  </div>`;
+  $('#filter').value = S.filter; $('#cat').value = S.cat; $('#sort').value = S.sort;
+  const q = $('#q'); q.oninput = () => { S.q = q.value; S.page = 0; clearTimeout(q.t); q.t = setTimeout(() => { render(); const n = $('#q'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 200); };
+  $('#filter').onchange = e => { S.filter = e.target.value; S.page = 0; render(); };
+  $('#cat').onchange = e => { S.cat = e.target.value; S.page = 0; render(); };
+  $('#sort').onchange = e => { S.sort = e.target.value; S.page = 0; render(); };
+  $('#prev').onclick = () => { S.page--; render(); window.scrollTo(0, 0); };
+  $('#next').onclick = () => { S.page++; render(); window.scrollTo(0, 0); };
+  $('#exp-cust').onclick = () => exportPriceList(list, false);
+  $('#exp-int').onclick = () => exportPriceList(list, true);
+}
+function rowHtml(p) {
+  const st = settings();
+  const prices = [...p.offers].sort((a, b) => a.price - b.price).map(o => `<span class="chip ${p.nSup > 1 && o === p.best ? 'best' : ''}">${esc(o.sup)} ${fmt(o.price)}</span>`).join('');
+  const supIds = [...new Set(p.offers.map(o => o.sid))];
+  const buy = p.nSup > 1
+    ? `<select class="buy" data-pid="${esc(p.pid)}" aria-label="Buy from"><option value="">Cheapest (${esc(p.best.sup)})</option>${supIds.map(id => `<option value="${esc(id)}" ${p.chosenSid === id ? 'selected' : ''}>${esc(S.suppliers[id]?.name || id)}</option>`).join('')}</select>`
+    : `<span class="muted">${esc(p.best.sup)}</span>`;
+  const inQ = S.quote.lines.some(l => l.pid === p.pid);
+  return `<tr>
+    <td class="pname"><button data-open="${esc(p.pid)}">${esc(p.name)}</button>${p.detail ? `<div class="det">${esc(p.detail)}</div>` : ''}${p.category ? `<div class="chips" style="margin-top:3px"><span class="chip cat">${esc(p.category)}</span></div>` : ''}</td>
+    <td><div class="chips">${prices}</div></td>
+    <td>${buy}</td>
+    <td class="num">${fmt(p.cost)}</td>
+    <td class="num"><input class="margin" type="number" step="0.5" data-pid="${esc(p.pid)}" value="${p.marginOv == null ? '' : pct(p.marginOv)}" placeholder="${pct(p.margin)}" aria-label="Margin percent"></td>
+    <td class="num sell">${fmt(p.sell)}</td>
+    <td class="num">${fmt(p.profit)}</td>
+    <td><button class="btn small" data-addq="${esc(p.pid)}" ${inQ ? 'disabled' : ''}>${inQ ? 'In quote' : 'Add to quote'}</button></td>
+  </tr>`;
+}
+
+// ---------- product dialog ----------
+function openProduct(pid) {
+  const p = D.byPid[pid]; if (!p) return;
+  const dlg = $('#dlg');
+  const ov = S.prodOv[pid] || {};
+  const st = settings();
+  const sugg = suggestions().filter(s => s.a === p || s.b === p).slice(0, 5).map(s => s.a === p ? s.b : s.a);
+  dlg.innerHTML = `<div class="dlg">
+    <div class="dlg-head"><h3 class="ar">${esc(p.name)}</h3><button class="btn small" data-close>Close</button></div>
+    <div class="grid2">
+      <div class="field"><label for="pd-name">Product name (shown to customers)</label><input id="pd-name" class="ar" value="${esc(ov.name || '')}" placeholder="${esc(p.offers[0].name)}"></div>
+      <div class="field"><label for="pd-detail">Details</label><input id="pd-detail" class="ar" value="${esc(ov.detail ?? '')}" placeholder="${esc(p.offers[0].detail || 'Size, weight, pack…')}"></div>
+      <div class="field"><label for="pd-cat">Category</label><input id="pd-cat" class="ar" list="catlist" value="${esc(ov.category ?? '')}" placeholder="${esc(p.offers.find(o => o.category)?.category || 'None')}"><datalist id="catlist">${D.cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
+      <div class="field"><label for="pd-unit">Unit</label><input id="pd-unit" class="ar" value="${esc(ov.unit || '')}" placeholder="piece, box, pack…"></div>
+    </div>
+    <div class="row"><button class="btn primary" id="pd-save">Save details</button><span class="muted small">Leave a field empty to use the supplier's text.</span></div>
+    <h3>Supplier prices</h3>
+    <div class="tablebox"><table><thead><tr><th>Supplier</th><th>Their item name</th><th class="num">Price</th><th>Source</th><th></th></tr></thead><tbody>
+      ${[...p.offers].sort((a, b) => a.price - b.price).map(o => `<tr><td>${esc(o.sup)}${o === p.best && p.nSup > 1 ? ' <span class="chip best">best</span>' : ''}</td><td class="ar">${esc(o.name)}${o.detail ? ' · ' + esc(o.detail) : ''}</td><td class="num">${fmt(o.price)}</td><td class="small muted">${esc(o.source)}</td><td>${p.offers.length > 1 ? `<button class="btn small" data-split="${esc(o.key)}">Not the same</button>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="small muted">Selling at ${fmt(p.sell)} ${esc(st.currency)} with a ${pct(p.margin)}% ${st.mode === 'margin' ? 'margin' : 'markup'} on a cost of ${fmt(p.cost)} from ${esc(p.buy.sup)}.</p>
+    <h3>Link the same product from another supplier</h3>
+    <input id="pd-search" type="search" placeholder="Search other suppliers' items" aria-label="Search items to link">
+    <div class="tablebox"><table><tbody id="pd-results">${linkRows(sugg, p)}</tbody></table></div>
+  </div>`;
+  dlg.showModal();
+  dlg.querySelector('[data-close]').onclick = () => dlg.close();
+  $('#pd-save').onclick = () => {
+    const next = { ...(S.prodOv[pid] || {}) };
+    for (const [f, id] of [['name', 'pd-name'], ['detail', 'pd-detail'], ['category', 'pd-cat'], ['unit', 'pd-unit']]) {
+      const val = $('#' + id).value.trim(); if (val) next[f] = val; else delete next[f];
+    }
+    S.prodOv[pid] = next; saveOv(pid); changed(); toast('Product details saved'); dlg.close();
+  };
+  const s = $('#pd-search');
+  s.oninput = () => {
+    const q = norm(s.value); const sids = new Set(p.offers.map(o => o.sid));
+    const res = q.length < 2 ? sugg : D.products.filter(x => x !== p && !x.offers.every(o => sids.has(o.sid)) && norm(x.name + ' ' + x.detail).includes(q)).slice(0, 12);
+    $('#pd-results').innerHTML = linkRows(res, p);
+  };
+}
+function linkRows(list, p) {
+  if (!list.length) return `<tr><td class="empty">No likely matches found. Search above by name.</td></tr>`;
+  return list.map(x => `<tr><td class="ar">${esc(x.name)}${x.detail ? ' · ' + esc(x.detail) : ''}</td><td class="small muted">${esc([...new Set(x.offers.map(o => o.sup))].join(', '))}</td><td class="num">${fmt(x.best.price)}</td><td><button class="btn small primary" data-merge="${esc(x.pid)}" data-into="${esc(p.pid)}">Same product</button></td></tr>`).join('');
+}
+function merge(fromPid, intoPid) {
+  const from = D.byPid[fromPid]; if (!from) return;
+  from.offers.forEach(o => S.links[o.key] = intoPid);
+  saveLinks(); changed(); toast('Linked. Prices are now compared side by side.');
+}
+function split(key) { S.links[key] = 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); saveLinks(); changed(); toast('Separated into its own product'); }
+
+// ---------- matching ----------
+function renderMatching(v) {
+  const list = suggestions().slice(0, 60);
+  v.innerHTML = `<div class="panel"><h2>Possible matches</h2>
+    <p class="muted">Items from different suppliers whose names look alike. Confirm the ones that are the same product so their prices are compared side by side. You can also link items by hand from any product's page.</p></div>
+    <div class="tablebox">${list.length ? list.map(s => `<div class="match-row">
+      <div><div class="ar" style="font-weight:500">${esc(s.a.name)}</div><div class="small muted ar">${esc(s.a.detail)} · ${esc(s.a.best.sup)} ${fmt(s.a.best.price)}</div></div>
+      <div class="score">${Math.round(s.score * 100)}% alike</div>
+      <div><div class="ar" style="font-weight:500">${esc(s.b.name)}</div><div class="small muted ar">${esc(s.b.detail)} · ${esc(s.b.best.sup)} ${fmt(s.b.best.price)}</div></div>
+      <div class="row"><button class="btn small primary" data-merge="${esc(s.b.pid)}" data-into="${esc(s.a.pid)}">Same product</button><button class="btn small" data-dismiss="${esc(s.pk)}">Different</button></div>
+    </div>`).join('') : `<div class="empty">No likely matches between your suppliers right now. When you add a list that sells the same kinds of items, suggestions appear here.</div>`}</div>`;
+}
+
+// ---------- suppliers & import ----------
+function renderSuppliers(v) {
+  const sups = supplierOrder();
+  const I = S.importState;
+  v.innerHTML = `<div class="grid2">${sups.map(s => {
+    const items = D.offers.filter(o => o.sid === s.id);
+    const shared = D.products.filter(p => p.nSup > 1 && p.offers.some(o => o.sid === s.id)).length;
+    return `<div class="panel supplier"><div class="name">${esc(s.name)}</div>
+      <div class="small muted">${esc(s.file || '')}${s.date ? ' · list date ' + esc(s.date) : ''}</div>
+      <div class="stats"><div class="stat"><b>${items.length.toLocaleString()}</b><span>items</span></div><div class="stat"><b>${shared}</b><span>matched with others</span></div></div>
+      <div class="row"><button class="btn small" data-update-sup="${esc(s.id)}">Upload new prices</button><button class="btn small danger" data-del-sup="${esc(s.id)}">Delete list</button></div></div>`;
+  }).join('')}</div>
+  <div class="panel" id="import">
+    <h2>${I?.sid ? 'Upload new prices for ' + esc(S.suppliers[I.sid]?.name) : 'Add a supplier price list'}</h2>
+    <p class="muted">Upload an Excel, CSV or PDF file, or a photo of a price list. PDFs and photos are read on this device page by page, and you check the rows before they are added. Matches you already confirmed stay in place for items whose name doesn't change.</p>
+    <div class="grid2">
+      <div class="field"><label for="im-file">Price list file</label><input id="im-file" type="file" accept=".xlsx,.xls,.csv,.pdf,image/jpeg,image/png,image/webp"></div>
+      <div class="field"><label for="im-name">Supplier name</label><input id="im-name" value="${esc(I?.supName || '')}" placeholder="e.g. Nile Medical" ${I?.sid ? 'disabled' : ''}></div>
+      <div class="field"><label for="im-date">List date</label><input id="im-date" type="date" value="${esc(I?.date || '')}"></div>
+    </div>
+    <div id="im-map"></div>
+  </div>`;
+  $('#im-file').onchange = e => readImport(e.target.files[0]);
+  $('#im-name').oninput = e => { S.importState = { ...(S.importState || {}), supName: e.target.value }; };
+  $('#im-date').oninput = e => { S.importState = { ...(S.importState || {}), date: e.target.value }; };
+  if (I?.rows) renderMapping();
+  if (I?.visual) renderVisual();
+}
+async function readImport(file) {
+  if (!file) return;
+  if (/\.pdf$/i.test(file.name) || file.type.startsWith('image/')) return readVisual(file);
+  if (typeof XLSX === 'undefined') { toast('The spreadsheet reader did not load. Reload the page and try again.'); return; }
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }).filter(r => r.some(c => String(c).trim() !== ''));
+    if (!raw.length) { toast('That file has no rows.'); return; }
+    const width = Math.max(...raw.map(r => r.length));
+    const sample = raw.slice(1, 60);
+    const numScore = c => sample.filter(r => r[c] !== '' && !isNaN(parseFloat(String(r[c]).replace(/[٠-٩]/g, d => AR_DIG.indexOf(d)).replace(/,/g, '')))).length;
+    const txtScore = c => sample.reduce((s, r) => s + (isNaN(parseFloat(r[c])) ? String(r[c]).length : 0), 0);
+    const cols = [...Array(width).keys()];
+    const price = cols.reduce((a, b) => numScore(b) > numScore(a) ? b : a, 0);
+    const name = cols.filter(c => c !== price).reduce((a, b) => txtScore(b) > txtScore(a) ? b : a, cols.find(c => c !== price) ?? 0);
+    S.importState = { ...(S.importState || {}), file: file.name, rows: raw, width, header: true, map: { name, price, detail: -1, category: -1 } };
+    renderMapping();
+  } catch (e) { console.error(e); toast('Could not read that file. Save it as .xlsx or .csv and try again.'); }
+}
+// ---------- PDF and photo import (read in the browser) ----------
+// Pages with a text layer are read directly; scanned pages and photos go through OCR, which is slower.
+function libsReady() {
+  if (typeof pdfjsLib === 'undefined' || typeof Tesseract === 'undefined') { toast('The PDF reader did not load. Reload the page and try again.'); return false; }
+  pdfjsLib.GlobalWorkerOptions.workerSrc ||= 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  return true;
+}
+async function readVisual(file, forceOcr = false) {
+  if (!libsReady()) return;
+  S.importAbort?.abort();
+  const ctl = S.importAbort = new AbortController();
+  const V = { pages: [], rows: [], status: '', forceOcr, view: 0 };
+  S.importState = { ...(S.importState || {}), file: file.name, rows: null, visual: V, fileObj: file };
+  renderVisual();
+  try {
+    await PdfImport.readFile(file, {
+      forceOcr, signal: ctl.signal,
+      onPage: ({ n, total, mode, rows }) => {
+        if (S.importState?.visual !== V) return;
+        V.total = total;
+        V.pages.push({ n, mode, count: rows.length });
+        V.rows.push(...rows.map(r => ({ name: r.name, price: r.price, detail: r.detail || '', category: r.category || '', page: n })));
+        renderVisual();
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    if (S.importState?.visual === V) V.status = /password/i.test(e?.name || e?.message || '') ? 'That PDF is password protected. Remove the password and try again.' : 'Could not read that file. Try another copy, or save it as Excel.';
+  }
+  if (S.importState?.visual === V) { V.done = true; renderVisual(); }
+}
+let visualTimer = 0;
+function renderVisual() { cancelAnimationFrame(visualTimer); visualTimer = requestAnimationFrame(drawVisual); }
+function drawVisual() {
+  const I = S.importState, box = $('#im-map'); if (!box || !I?.visual) return;
+  const V = I.visual, PER = 100;
+  const bad = V.rows.filter(r => !r.name || isNaN(r.price)).length;
+  const scanned = V.pages.some(p => p.mode === 'scan');
+  V.view = Math.min(V.view || 0, Math.max(0, Math.ceil(V.rows.length / PER) - 1));
+  const shown = V.rows.slice(V.view * PER, V.view * PER + PER);
+  box.innerHTML = `
+    ${V.status ? `<p class="note">${esc(V.status)}</p>` : ''}
+    <div class="row"><strong>${V.done ? 'Finished reading' : 'Reading'} ${esc(I.file)}</strong><span class="muted small">${V.pages.length}${V.total ? ' of ' + V.total : ''} pages · ${V.rows.length.toLocaleString()} rows found</span></div>
+    ${!V.done && (V.forceOcr || !V.pages.length || scanned) ? `<p class="small muted">Scanned pages are read letter by letter on this device, so each one can take up to a minute. The first scan also downloads the Arabic reading data once.</p>` : ''}
+    ${V.pages.length ? `<div class="chips">${V.pages.map(p => `<span class="chip ${p.count ? 'best' : 'warn'}" title="${p.mode === 'scan' ? 'Read from the page image' : 'Read from the PDF text'}">Page ${p.n}: ${p.count} rows${p.mode === 'scan' ? ' · scanned' : ''}</span>`).join('')}</div>` : ''}
+    ${V.rows.length ? `<p class="small muted">Check the rows against the file, especially prices${scanned ? ' and names on scanned pages' : ''}. Fix anything here before importing; you can also rename products later.</p>
+    <div class="tablebox"><table><thead><tr><th>Page</th><th>Item</th><th>Details</th><th class="num">Price</th><th></th></tr></thead><tbody>
+      ${shown.map((r, i) => { const k = V.view * PER + i; return `<tr><td class="muted">${r.page}</td><td><input class="ar" style="width:100%;min-width:220px" data-vrow="${k}" data-vf="name" value="${esc(r.name)}" aria-label="Item name"></td><td><input class="ar" style="width:130px" data-vrow="${k}" data-vf="detail" value="${esc(r.detail)}" aria-label="Details"></td><td class="num"><input type="number" step="0.01" style="width:100px;text-align:right${isNaN(r.price) ? ';border-color:var(--danger)' : ''}" data-vrow="${k}" data-vf="price" value="${isNaN(r.price) ? '' : r.price}" aria-label="Price"></td><td><button class="btn small" data-vdel="${k}">Remove</button></td></tr>`; }).join('')}
+    </tbody></table>
+    <div class="pager"><span class="muted small">Rows ${V.view * PER + 1}–${V.view * PER + shown.length} of ${V.rows.length.toLocaleString()}</span><button class="btn small" data-vpage="-1" ${V.view ? '' : 'disabled'}>Previous</button><button class="btn small" data-vpage="1" ${(V.view + 1) * PER < V.rows.length ? '' : 'disabled'}>Next</button></div></div>` : ''}
+    <div class="row"><button class="btn primary" id="mp-go" ${V.done && V.rows.length && !bad ? '' : 'disabled'}>Import ${(V.rows.length - bad).toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button>${bad ? `<span class="chip warn">${bad} rows need a price</span>` : ''}
+      ${V.done && /\.pdf$/i.test(I.file) && !V.forceOcr ? `<button class="btn" id="mp-ocr" title="Use this when the rows look wrong or empty">Rows look wrong? Scan the pages instead</button>` : ''}</div>`;
+  $('#mp-cancel').onclick = () => { S.importAbort?.abort(); S.importState = null; render(); };
+  $('#mp-go').onclick = () => doImport(V.rows.map(r => [r.name, r.price, r.detail, 'p' + r.page, r.category]));
+  const ocr = $('#mp-ocr'); if (ocr) ocr.onclick = () => readVisual(I.fileObj, true);
+}
+document.addEventListener('change', e => {
+  const t = e.target, V = S.importState?.visual; if (!V || t.dataset.vrow == null) return;
+  const r = V.rows[+t.dataset.vrow]; if (!r) return;
+  r[t.dataset.vf] = t.dataset.vf === 'price' ? parseFloat(t.value) : t.value.trim();
+  if (t.dataset.vf === 'price') renderVisual();
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest('button'), V = S.importState?.visual; if (!t || !V) return;
+  if (t.dataset.vdel != null) { V.rows.splice(+t.dataset.vdel, 1); renderVisual(); }
+  else if (t.dataset.vpage) { V.view += +t.dataset.vpage; renderVisual(); }
+});
+function parsedRows() {
+  const I = S.importState; const m = I.map;
+  const body = I.header ? I.rows.slice(1) : I.rows;
+  const num = x => parseFloat(String(x).replace(/[٠-٩]/g, d => AR_DIG.indexOf(d)).replace(/٫/g, '.').replace(/[^\d.\-]/g, ''));
+  return body.map((r, i) => [String(r[m.name] ?? '').trim(), num(r[m.price]), m.detail >= 0 ? String(r[m.detail] ?? '').trim() : '', 'row ' + (i + (I.header ? 2 : 1)), m.category >= 0 ? String(r[m.category] ?? '').trim() : ''])
+    .filter(r => r[0] && !isNaN(r[1]));
+}
+function renderMapping() {
+  const I = S.importState, box = $('#im-map'); if (!box) return;
+  const head = I.rows[0];
+  const opt = (sel, none) => (none ? `<option value="-1">None</option>` : '') + [...Array(I.width).keys()].map(c => `<option value="${c}" ${sel === c ? 'selected' : ''}>Column ${c + 1}${I.header && head[c] !== '' ? ': ' + esc(String(head[c]).slice(0, 30)) : ''}</option>`).join('');
+  const rows = parsedRows();
+  box.innerHTML = `<div class="grid2">
+      <div class="field"><label for="mp-name">Item name column</label><select id="mp-name">${opt(I.map.name)}</select></div>
+      <div class="field"><label for="mp-price">Price column</label><select id="mp-price">${opt(I.map.price)}</select></div>
+      <div class="field"><label for="mp-detail">Details column (optional)</label><select id="mp-detail">${opt(I.map.detail, 1)}</select></div>
+      <div class="field"><label for="mp-cat">Category column (optional)</label><select id="mp-cat">${opt(I.map.category, 1)}</select></div>
+    </div>
+    <label class="row small"><input type="checkbox" id="mp-head" ${I.header ? 'checked' : ''}> The first row is a header</label>
+    <div class="tablebox"><table><thead><tr><th>Item</th><th>Details</th><th class="num">Price</th></tr></thead><tbody>${rows.slice(0, 6).map(r => `<tr><td class="ar">${esc(r[0])}</td><td class="ar">${esc(r[2])}</td><td class="num">${fmt(r[1])}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No rows with both a name and a price. Check the columns above.</td></tr>'}</tbody></table></div>
+    <div class="row"><button class="btn primary" id="mp-go" ${rows.length ? '' : 'disabled'}>Import ${rows.length.toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button></div>`;
+  for (const [id, f] of [['mp-name', 'name'], ['mp-price', 'price'], ['mp-detail', 'detail'], ['mp-cat', 'category']]) $('#' + id).onchange = e => { I.map[f] = +e.target.value; renderMapping(); };
+  $('#mp-head').onchange = e => { I.header = e.target.checked; renderMapping(); };
+  $('#mp-cancel').onclick = () => { S.importState = null; render(); };
+  $('#mp-go').onclick = () => doImport(rows);
+}
+async function doImport(rows) {
+  const I = S.importState;
+  const name = (I.sid ? S.suppliers[I.sid].name : (I.supName || '').trim());
+  if (!name) { toast('Give the supplier a name first.'); $('#im-name')?.focus(); return; }
+  if (!S.db) { toast('Sign in to save changes.'); return; }
+  const sid = I.sid || (name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 's') + '-' + Date.now().toString(36).slice(-4);
+  const old = S.suppliers[sid]?.chunks || 0;
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += 500) chunks.push(rows.slice(i, i + 500));
+  $('#mp-go').disabled = true; $('#mp-go').textContent = 'Importing…';
+  try {
+    for (let c = 0; c < chunks.length; c++) await S.db.doc('items/' + sid + '-' + c).set({ sid, chunk: c, rows: rowsToDb(chunks[c]) });
+    for (let c = chunks.length; c < old; c++) await S.db.doc('items/' + sid + '-' + c).delete();
+    await S.db.doc('suppliers/' + sid).set({ name, file: I.file, date: I.date || '', chunks: chunks.length, count: rows.length, order: S.suppliers[sid]?.order ?? Object.keys(S.suppliers).length });
+    S.importState = null; S.pendingImport = { sid, chunks: chunks.length }; toast(`Imported ${rows.length.toLocaleString()} items from ${name}`);
+    render();
+  } catch (e) { console.error(e); toast(e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'The import stopped partway. Try again.'); render(); }
+}
+async function deleteSupplier(sid, btn) {
+  if (!btn.classList.contains('armed')) { btn.classList.add('armed'); btn.textContent = 'Click again to delete'; setTimeout(() => { btn.classList.remove('armed'); btn.textContent = 'Delete list'; }, 4000); return; }
+  const s = S.suppliers[sid];
+  for (let c = 0; c < (s.chunks || 0); c++) await delDoc('items/' + sid + '-' + c);
+  await delDoc('suppliers/' + sid);
+  toast(`Deleted ${s.name}'s list`);
+}
+
+// ---------- quote ----------
+function quoteLines() {
+  return S.quote.lines.map(l => {
+    const p = D.byPid[l.pid];
+    const unit = l.price != null && l.price !== '' ? +l.price : p?.sell;
+    return { ...l, p, name: p?.name ?? l.name, detail: p?.detail ?? l.detail, unitLabel: p?.unit || '', unit, total: (unit || 0) * (+l.qty || 0), cost: p ? p.cost * (+l.qty || 0) : 0 };
+  });
+}
+function renderQuote(v) {
+  const st = settings(), Q = S.quote, lines = quoteLines();
+  const total = lines.reduce((s, l) => s + l.total, 0), cost = lines.reduce((s, l) => s + l.cost, 0);
+  const saved = Object.values(S.quotes).sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
+  v.innerHTML = `<div class="panel">
+    <div class="row" style="justify-content:space-between"><h2>${Q.id ? 'Quote for ' + esc(Q.customer || 'customer') : 'New customer quote'}</h2>
+      <div class="row"><button class="btn" id="qt-new">Start a new quote</button><button class="btn" id="qt-save">Save quote</button><button class="btn primary" id="qt-xlsx" ${lines.length ? '' : 'disabled'}>Download Excel for customer</button></div></div>
+    <div class="grid2">
+      <div class="field"><label for="qt-cust">Customer</label><input id="qt-cust" value="${esc(Q.customer)}" placeholder="Customer or clinic name"></div>
+      <div class="field"><label for="qt-date">Date</label><input id="qt-date" type="date" value="${esc(Q.date)}"></div>
+      <div class="field"><label for="qt-notes">Notes for the customer</label><input id="qt-notes" value="${esc(Q.notes)}" placeholder="e.g. Prices valid for 7 days"></div>
+    </div>
+    <div class="field"><label for="qt-add">Add a product</label><input id="qt-add" type="search" placeholder="Search by name"></div>
+    <div class="tablebox" id="qt-results" hidden><table><tbody></tbody></table></div>
+  </div>
+  <div class="tablebox"><table>
+    <thead><tr><th>Product</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Total</th><th class="num">Your cost</th><th></th></tr></thead>
+    <tbody>${lines.map((l, i) => `<tr><td class="pname"><div class="ar" style="font-weight:500">${esc(l.name)}</div>${l.detail ? `<div class="det">${esc(l.detail)}</div>` : ''}${l.p ? '' : '<span class="chip warn">no longer in a price list</span>'}</td>
+      <td class="num"><input type="number" min="0" step="1" style="width:80px;text-align:right" data-qty="${i}" value="${esc(l.qty)}" aria-label="Quantity"></td>
+      <td class="num"><input type="number" min="0" step="0.01" style="width:100px;text-align:right" data-uprice="${i}" value="${l.price ?? ''}" placeholder="${fmt(l.p?.sell)}" aria-label="Unit price"></td>
+      <td class="num sell">${fmt(l.total)}</td><td class="num muted">${fmt(l.cost)}</td><td><button class="btn small" data-rmq="${i}">Remove</button></td></tr>`).join('') || `<tr><td colspan="6" class="empty">Add products from the search above or with "Add to quote" on the Products tab.</td></tr>`}
+    ${lines.length ? `<tr class="qtotal"><td>Total (${esc(st.currency)})</td><td></td><td></td><td class="num">${fmt(total)}</td><td class="num">${fmt(cost)}</td><td class="small">profit ${fmt(total - cost)}</td></tr>` : ''}</tbody>
+  </table></div>
+  ${saved.length ? `<div class="panel"><h3>Saved quotes</h3><div class="tablebox"><table><tbody>${saved.map(q => `<tr><td>${esc(q.customer || 'No name')}</td><td class="muted">${esc(q.date)}</td><td class="num">${q.lines.length} items</td><td><div class="row"><button class="btn small" data-loadq="${esc(q.id)}">Open</button><button class="btn small danger" data-delq="${esc(q.id)}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+  const upd = (k, val) => { S.quote[k] = val; saveDraft(); };
+  $('#qt-cust').oninput = e => upd('customer', e.target.value);
+  $('#qt-date').oninput = e => upd('date', e.target.value);
+  $('#qt-notes').oninput = e => upd('notes', e.target.value);
+  $('#qt-new').onclick = () => { S.quote = newQuote(); saveDraft(); render(); };
+  $('#qt-save').onclick = saveQuote;
+  $('#qt-xlsx').onclick = exportQuote;
+  const add = $('#qt-add');
+  add.oninput = () => {
+    const q = norm(add.value), box = $('#qt-results');
+    if (q.length < 2) { box.hidden = true; return; }
+    const res = D.products.filter(p => norm(p.name + ' ' + p.detail).includes(q)).slice(0, 10);
+    box.hidden = false;
+    box.querySelector('tbody').innerHTML = res.map(p => `<tr><td class="ar">${esc(p.name)}${p.detail ? ' · ' + esc(p.detail) : ''}</td><td class="num">${fmt(p.sell)}</td><td><button class="btn small primary" data-addq="${esc(p.pid)}">Add</button></td></tr>`).join('') || '<tr><td class="empty">No products found</td></tr>';
+  };
+}
+function addToQuote(pid) {
+  const p = D.byPid[pid]; if (!p || S.quote.lines.some(l => l.pid === pid)) return;
+  S.quote.lines.push({ pid, qty: 1, price: null, name: p.name, detail: p.detail }); saveDraft(); render();
+  toast('Added to the customer quote');
+}
+async function saveQuote() {
+  const Q = S.quote; if (!Q.lines.length) { toast('Add at least one product first.'); return; }
+  Q.id ||= 'q-' + Date.now().toString(36);
+  Q.lines = quoteLines().map(l => ({ pid: l.pid, qty: +l.qty || 0, price: l.price === '' ? null : l.price, name: l.name, detail: l.detail }));
+  saveDraft();
+  await setDoc('quotes/' + Q.id, { customer: Q.customer, date: Q.date, notes: Q.notes, lines: Q.lines, updated: new Date().toISOString() });
+  toast('Quote saved'); render();
+}
+
+// ---------- excel export ----------
+async function saveXlsx(wb, filename) {
+  wb.Workbook = { Views: [{ RTL: true }] };
+  try { XLSX.writeFile(wb, filename); toast('Excel file downloaded'); }
+  catch (e) { console.error(e); toast('The file could not be saved here.'); }
+}
+function sheet(aoa, widths, moneyCols, startRow) {
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = widths.map(w => ({ wch: w }));
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for (let r = startRow; r <= range.e.r; r++) for (const c of moneyCols) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = '#,##0.00'; }
+  return ws;
+}
+const fileDate = () => new Date().toISOString().slice(0, 10);
+function xlsxReady() { if (typeof XLSX !== 'undefined') return true; toast('The Excel writer did not load. Reload the page and try again.'); return false; }
+async function exportQuote() {
+  if (!xlsxReady()) return;
+  const st = settings(), Q = S.quote, lines = quoteLines();
+  const total = lines.reduce((s, l) => s + l.total, 0);
+  const aoa = [];
+  if (st.company) aoa.push([st.company]);
+  aoa.push(['عرض سعر / Price quote'], ['العميل / Customer', Q.customer], ['التاريخ / Date', Q.date], []);
+  const head = aoa.length;
+  aoa.push(['#', 'اسم المنتج / Product', 'التفاصيل / Details', 'الوحدة / Unit', 'الكمية / Qty', `سعر الوحدة / Unit price (${st.currency})`, `الإجمالي / Total (${st.currency})`]);
+  lines.forEach((l, i) => aoa.push([i + 1, l.name, l.detail, l.unitLabel, +l.qty || 0, l.unit, l.total]));
+  aoa.push(['', 'الإجمالي / Total', '', '', '', '', total]);
+  if (Q.notes) aoa.push([], ['ملاحظات / Notes', Q.notes]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, sheet(aoa, [5, 55, 22, 10, 9, 18, 18], [5, 6], head + 1), 'Quote');
+  await saveXlsx(wb, `Quote ${(Q.customer || 'customer').replace(/[\\/:*?"<>|]/g, '')} ${Q.date || fileDate()}.xlsx`);
+}
+async function exportPriceList(list, internal) {
+  if (!xlsxReady()) return;
+  const st = settings();
+  const sorted = [...list].sort((a, b) => (a.category || '').localeCompare(b.category || '', 'ar') || a.name.localeCompare(b.name, 'ar'));
+  let aoa, widths, money;
+  if (internal) {
+    aoa = [['Product', 'Details', 'Category', 'Suppliers', 'Best price', 'Best supplier', 'Buying from', 'Cost', 'Margin %', 'Sell price', 'Profit']];
+    sorted.forEach(p => aoa.push([p.name, p.detail, p.category, p.offers.map(o => `${o.sup}: ${o.price}`).join(' | '), p.best.price, p.best.sup, p.buy.sup, p.cost, +(p.margin * 100).toFixed(2), p.sell, +p.profit.toFixed(2)]));
+    widths = [50, 18, 22, 40, 11, 16, 16, 10, 9, 11, 10]; money = [4, 7, 9, 10];
+  } else {
+    aoa = [];
+    if (st.company) aoa.push([st.company]);
+    aoa.push(['قائمة الأسعار / Price list', fileDate()], []);
+    aoa.push(['#', 'اسم المنتج / Product', 'التفاصيل / Details', 'الفئة / Category', 'الوحدة / Unit', `السعر / Price (${st.currency})`]);
+    sorted.forEach((p, i) => aoa.push([i + 1, p.name, p.detail, p.category, p.unit, p.sell]));
+    widths = [6, 55, 20, 28, 10, 16]; money = [5];
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, sheet(aoa, widths, money, 1), internal ? 'Costing' : 'Price list');
+  await saveXlsx(wb, `${internal ? 'Costing sheet' : 'Price list'} ${fileDate()}.xlsx`);
+}
+
+// ---------- settings ----------
+function renderSettings(v) {
+  const st = settings();
+  v.innerHTML = `<div class="panel"><h2>Pricing rules</h2>
+    <div class="grid2">
+      <div class="field"><label for="st-m">Default margin %</label><input id="st-m" type="number" step="0.5" value="${pct(st.defaultMargin)}"></div>
+      <div class="field"><label for="st-mode">How the margin is applied</label><select id="st-mode">
+        <option value="markup" ${st.mode === 'markup' ? 'selected' : ''}>Added on cost: 100 at 20% sells for 120</option>
+        <option value="margin" ${st.mode === 'margin' ? 'selected' : ''}>Share of sale price: 100 at 20% sells for 125</option></select></div>
+      <div class="field"><label for="st-round">Round sell prices up to</label><select id="st-round">
+        ${[[0, 'No rounding'], [0.05, '0.05'], [0.25, '0.25'], [0.5, '0.50'], [1, '1'], [5, '5']].map(([v, l]) => `<option value="${v}" ${st.round == v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="field"><label for="st-cur">Currency label</label><input id="st-cur" value="${esc(st.currency)}"></div>
+      <div class="field"><label for="st-co">Your company name (top of customer files)</label><input id="st-co" value="${esc(st.company)}" placeholder="Shown on quotes and price lists"></div>
+    </div>
+    <p class="small muted">A margin set on a product wins over its category's margin, which wins over the default.</p></div>
+  <div class="panel"><h2>Margin by category</h2>
+    ${D.cats.length ? `<div class="tablebox"><table><thead><tr><th>Category</th><th class="num">Products</th><th class="num">Margin %</th></tr></thead><tbody>${D.cats.map((c, i) => `<tr><td class="ar">${esc(c)}</td><td class="num">${D.products.filter(p => p.category === c).length}</td><td class="num"><input type="number" step="0.5" style="width:90px;text-align:right" data-catm="${i}" value="${st.catMargins[c] == null ? '' : pct(st.catMargins[c])}" placeholder="${pct(st.defaultMargin)}" aria-label="Category margin"></td></tr>`).join('')}</tbody></table></div>`
+      : '<p class="muted">No categories yet. Set a category on any product and it appears here.</p>'}
+  </div>
+  <div class="panel"><h2>Backup</h2>
+    <p class="muted">Download everything (supplier lists, matches, product edits, settings and saved quotes) as one file, or load a backup file. Loading adds the backup's data and replaces anything with the same name; nothing else is deleted.</p>
+    <div class="row"><button class="btn" id="bk-get">Download backup</button>
+      <label class="btn" style="display:inline-block">Load a backup file<input id="bk-put" type="file" accept=".json,application/json" hidden></label>
+      <span class="muted small" id="bk-status"></span></div>
+  </div>`;
+  $('#bk-get').onclick = downloadBackup;
+  $('#bk-put').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); };
+  const save = patch => { S.settings = { ...settings(), ...patch }; setDoc('settings/main', S.settings); changed(); };
+  $('#st-m').onchange = e => { const n = parseFloat(e.target.value); if (!isNaN(n)) save({ defaultMargin: n / 100 }); };
+  $('#st-mode').onchange = e => save({ mode: e.target.value });
+  $('#st-round').onchange = e => save({ round: +e.target.value });
+  $('#st-cur').onchange = e => save({ currency: e.target.value.trim() || 'ج.م' });
+  $('#st-co').onchange = e => save({ company: e.target.value.trim() });
+  document.querySelectorAll('[data-catm]').forEach(inp => inp.onchange = () => {
+    const c = D.cats[+inp.dataset.catm], cm = { ...settings().catMargins }, n = parseFloat(inp.value);
+    if (isNaN(n)) delete cm[c]; else cm[c] = n / 100; save({ catMargins: cm });
+  });
+}
+
+// ---------- backup ----------
+function downloadBackup() {
+  const docs = {};
+  for (const sup of Object.values(S.suppliers)) { const { id, ...d } = sup; docs['suppliers/' + id] = d; }
+  for (const [id, rows] of Object.entries(S.chunks)) { const sid = S.suppliers[id.replace(/-\d+$/, '')] ? id.replace(/-\d+$/, '') : id; docs['items/' + id] = { sid, chunk: +id.split('-').pop(), rows }; }
+  docs['matching/links'] = { map: S.links }; docs['matching/dismissed'] = { map: S.dismissed };
+  for (const [pid, ov] of Object.entries(S.prodOv)) docs['products/' + pid] = ov;
+  if (S.settings) docs['settings/main'] = S.settings;
+  for (const q of Object.values(S.quotes)) { const { id, ...d } = q; docs['quotes/' + id] = d; }
+  const blob = new Blob([JSON.stringify({ app: 'supply-price-desk', version: 1, exported: new Date().toISOString(), docs })], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Supply Price Desk backup ${fileDate()}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function restoreBackup(file) {
+  if (!S.db) { toast('Sign in to load a backup.'); return; }
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { data = null; }
+  if (!data || data.app !== 'supply-price-desk' || !data.docs) { toast('That file is not a Supply Price Desk backup.'); return; }
+  const allowed = /^(suppliers|items|matching|products|settings|quotes)\/[^/]+$/;
+  const entries = Object.entries(data.docs).filter(([path]) => allowed.test(path));
+  const status = $('#bk-status');
+  try {
+    for (let i = 0; i < entries.length; i += 100) {
+      const batch = S.db.batch();
+      for (const [path, d] of entries.slice(i, i + 100)) {
+        if (path === 'matching/links' || path === 'matching/dismissed') {
+          // keep matches people made here and add the backup's on top
+          const cur = path.endsWith('links') ? S.links : S.dismissed;
+          batch.set(S.db.doc(path), { map: { ...cur, ...(d.map || {}) } });
+        } else batch.set(S.db.doc(path), path.startsWith('items/') ? { ...d, rows: rowsToDb(d.rows || []) } : d);
+      }
+      if (status) status.textContent = `Loading… ${Math.min(i + 100, entries.length)} of ${entries.length}`;
+      await batch.commit();
+    }
+    toast('Backup loaded'); if (status) status.textContent = '';
+  } catch (e) { console.error(e); toast(e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'Loading stopped partway. Try again.'); }
+}
+
+// ---------- events ----------
+$('#tabs').onclick = e => { const b = e.target.closest('button[data-tab]'); if (b) { S.tab = b.dataset.tab; render(); } };
+document.addEventListener('click', e => {
+  const t = e.target.closest('button'); if (!t) return;
+  const d = t.dataset;
+  if (d.go) { S.tab = d.go; render(); }
+  else if (d.open) openProduct(d.open);
+  else if (d.addq) addToQuote(d.addq);
+  else if (d.merge) { merge(d.merge, d.into); const dlg = $('#dlg'); if (dlg.open) { dlg.close(); openProduct(d.into); } }
+  else if (d.split) { split(d.split); $('#dlg').close(); }
+  else if (d.dismiss) { S.dismissed[d.dismiss] = true; saveDismissed(); changed(); }
+  else if (d.delSup) deleteSupplier(d.delSup, t);
+  else if (d.updateSup) { S.importState = { sid: d.updateSup }; render(); $('#import').scrollIntoView({ behavior: 'smooth' }); }
+  else if (d.rmq) { S.quote.lines.splice(+d.rmq, 1); saveDraft(); render(); }
+  else if (d.loadq) { const q = S.quotes[d.loadq]; S.quote = { id: q.id, customer: q.customer, date: q.date, notes: q.notes || '', lines: q.lines.map(l => ({ ...l })) }; saveDraft(); render(); }
+  else if (d.delq) {
+    if (!t.classList.contains('armed')) { t.classList.add('armed'); t.textContent = 'Click again'; return; }
+    delDoc('quotes/' + d.delq); if (S.quote.id === d.delq) S.quote.id = null; toast('Quote deleted');
+  }
+});
+document.addEventListener('change', e => {
+  const t = e.target, d = t.dataset;
+  if (d.pid && t.classList.contains('buy')) { const ov = { ...(S.prodOv[d.pid] || {}) }; if (t.value) ov.chosen = t.value; else delete ov.chosen; S.prodOv[d.pid] = ov; saveOv(d.pid); changed(); }
+  else if (d.pid && t.classList.contains('margin')) { const ov = { ...(S.prodOv[d.pid] || {}) }; const n = parseFloat(t.value); if (isNaN(n)) delete ov.margin; else ov.margin = n / 100; S.prodOv[d.pid] = ov; saveOv(d.pid); changed(); }
+  else if (d.qty != null) { S.quote.lines[+d.qty].qty = Math.max(0, parseFloat(t.value) || 0); saveDraft(); render(); }
+  else if (d.uprice != null) { const n = parseFloat(t.value); S.quote.lines[+d.uprice].price = isNaN(n) ? null : n; saveDraft(); render(); }
+});
+boot();
+</script>
+</body>
+</html>

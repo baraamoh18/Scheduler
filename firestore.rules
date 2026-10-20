@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Only these Google accounts can see or change anything. Use lowercase emails.
+    function onTeam() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() in [
+          'first.person@gmail.com',
+          'second.person@gmail.com'
+        ];
+    }
+    match /{document=**} {
+      allow read, write: if onTeam();
+    }
+  }
+}
