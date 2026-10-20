@@ -578,9 +578,16 @@ async function readImport(file) {
     const numScore = c => sample.filter(r => r[c] !== '' && TableReader.isNumber(String(r[c]))).length;
     const txtScore = c => sample.reduce((s, r) => s + (TableReader.isNumber(String(r[c])) ? 0 : String(r[c]).length), 0);
     const cols = [...Array(width).keys()];
-    const price = cols.reduce((a, b) => numScore(b) > numScore(a) ? b : a, 0);
-    const name = cols.filter(c => c !== price).reduce((a, b) => txtScore(b) > txtScore(a) ? b : a, cols.find(c => c !== price) ?? 0);
-    S.importState = { ...(S.importState || {}), file: file.name, rows: raw, width, header: true, map: { name, price, detail: -1, category: -1 } };
+    // a header that says price or name wins; otherwise the most numeric / most wordy column
+    const heads = (raw[0] || []).map(h => String(h ?? ''));
+    const byHead = re => cols.find(c => re.test(heads[c]) && !TableReader.isNumber(heads[c]));
+    const priceHead = byHead(/(السعر|سعر|الثمن|price|cost)/i);
+    const price = priceHead ?? cols.reduce((a, b) => numScore(b) > numScore(a) ? b : a, 0);
+    const nameHead = byHead(/(اسم|الصنف|المنتج|البيان|الوصف|product|item|name|description)/i);
+    const name = nameHead != null && nameHead !== price ? nameHead : cols.filter(c => c !== price).reduce((a, b) => txtScore(b) > txtScore(a) ? b : a, cols.find(c => c !== price) ?? 0);
+    const cols2 = cols.map(c => ({ use: c === name ? 'name' : c === price ? 'price' : 'skip', label: '' }));
+    S.importState = { ...(S.importState || {}), file: file.name, rows: raw, width, header: true, cols: cols2 };
+    applySavedColumns(S.importState);
     renderMapping();
   } catch (e) { console.error(e); toast('Could not read that file. Save it as .xlsx or .csv and try again.'); }
 }
@@ -653,11 +660,40 @@ document.addEventListener('click', e => {
   if (t.dataset.vdel != null) { V.rows.splice(+t.dataset.vdel, 1); renderVisual(); }
   else if (t.dataset.vpage) { V.view += +t.dataset.vpage; renderVisual(); }
 });
+// ---------- column choices for Excel/CSV ----------
+// I.cols[c] = {use: 'name'|'price'|'detail'|'category'|'skip', label}; details columns can be named ("Size: 40").
+const USES = [['name', 'Item name'], ['price', 'Price'], ['detail', 'Details'], ['category', 'Category'], ['skip', "Don't import"]];
+const colOf = (I, use) => I.cols.findIndex(c => c.use === use);
+const headText = (I, c) => I.header ? String(I.rows[0][c] ?? '').trim() : '';
+function setUse(I, c, use) {
+  if (use === 'name' || use === 'price' || use === 'category') I.cols.forEach(x => { if (x.use === use) x.use = 'skip'; }); // only one of each
+  I.cols[c].use = use; delete I.cols[c].rank;
+}
+// reuse the columns chosen the last time this supplier's list was uploaded, matched by header text
+function applySavedColumns(I) {
+  const saved = I.sid && S.suppliers[I.sid]?.columns;
+  if (!saved?.length) return;
+  const header = S.suppliers[I.sid].header !== false;
+  const heads = I.rows[0].map(h => String(h ?? '').trim());
+  const found = saved.map((sc, i) => { const c = header && sc.header ? heads.indexOf(sc.header) : sc.col ?? i; return c < I.width ? c : -1; });
+  if (!found.some((c, i) => c >= 0 && saved[i].use === 'name') || !found.some((c, i) => c >= 0 && saved[i].use === 'price')) return;
+  I.header = header;
+  I.cols.forEach(x => { x.use = 'skip'; x.label = ''; });
+  // rank keeps details in the saved order even if the file's columns moved, so item names stay the same
+  found.forEach((c, i) => { if (c >= 0) I.cols[c] = { use: saved[i].use, label: saved[i].label || '', rank: i }; });
+  I.usedSaved = true;
+}
 function parsedRows() {
-  const I = S.importState; const m = I.map;
+  const I = S.importState;
   const body = I.header ? I.rows.slice(1) : I.rows;
   const num = x => typeof x === 'number' ? x : TableReader.parsePrice(x);
-  return body.map((r, i) => [String(r[m.name] ?? '').trim(), num(r[m.price]), m.detail >= 0 ? String(r[m.detail] ?? '').trim() : '', 'row ' + (i + (I.header ? 2 : 1)), m.category >= 0 ? String(r[m.category] ?? '').trim() : ''])
+  const name = colOf(I, 'name'), price = colOf(I, 'price'), cat = colOf(I, 'category');
+  if (name < 0 || price < 0) return [];
+  const details = I.cols.map((x, c) => x.use === 'detail' ? c : -1).filter(c => c >= 0).sort((a, b) => (I.cols[a].rank ?? 1000 + a) - (I.cols[b].rank ?? 1000 + b));
+  const cell = (r, c) => String(r[c] ?? '').trim();
+  return body.map((r, i) => [cell(r, name), num(r[price]),
+    details.map(c => { const v = cell(r, c), l = I.cols[c].label.trim(); return v ? (l ? `${l}: ${v}` : v) : ''; }).filter(Boolean).join(' · '),
+    'row ' + (i + (I.header ? 2 : 1)), cat >= 0 ? cell(r, cat) : ''])
     .filter(r => r[0] && r[1] > 0);
 }
 // ---------- price-change report (uploading new prices for an existing supplier) ----------
@@ -706,20 +742,23 @@ function lastChangeText(c) {
 }
 function renderMapping() {
   const I = S.importState, box = $('#im-map'); if (!box) return;
-  const head = I.rows[0];
-  const opt = (sel, none) => (none ? `<option value="-1">None</option>` : '') + [...Array(I.width).keys()].map(c => `<option value="${c}" ${sel === c ? 'selected' : ''}>Column ${c + 1}${I.header && head[c] !== '' ? ': ' + esc(String(head[c]).slice(0, 30)) : ''}</option>`).join('');
   const rows = parsedRows();
-  box.innerHTML = `<div class="grid2">
-      <div class="field"><label for="mp-name">Item name column</label><select id="mp-name">${opt(I.map.name)}</select></div>
-      <div class="field"><label for="mp-price">Price column</label><select id="mp-price">${opt(I.map.price)}</select></div>
-      <div class="field"><label for="mp-detail">Details column (optional)</label><select id="mp-detail">${opt(I.map.detail, 1)}</select></div>
-      <div class="field"><label for="mp-cat">Category column (optional)</label><select id="mp-cat">${opt(I.map.category, 1)}</select></div>
-    </div>
+  const sample = c => { const r = I.rows.slice(I.header ? 1 : 0).find(r => String(r[c] ?? '').trim() !== ''); return r ? String(r[c]).trim().slice(0, 40) : ''; };
+  const missing = [colOf(I, 'name') < 0 && 'the item name', colOf(I, 'price') < 0 && 'the price'].filter(Boolean);
+  box.innerHTML = `<h3>Columns</h3>
+    <p class="small muted">Choose what each column of the file is. You can import several columns as details and give each one the name you want shown, for example "Size" or "المقاس"; leave the name empty to show just the value.${I.usedSaved ? ' These are the choices from the last upload of this supplier.' : ''}</p>
+    <div class="tablebox"><table><thead><tr><th>Column in the file</th><th>Example</th><th>Use as</th><th>Name to show</th></tr></thead><tbody>
+      ${I.cols.map((x, c) => `<tr><td class="ar">${esc(headText(I, c) || 'Column ' + (c + 1))}</td><td class="ar small muted">${esc(sample(c))}</td>
+        <td><select data-coluse="${c}" aria-label="Use column ${c + 1} as">${USES.map(([v, l]) => `<option value="${v}" ${x.use === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
+        <td>${x.use === 'detail' ? `<input class="ar" data-collabel="${c}" value="${esc(x.label)}" placeholder="${esc(headText(I, c) || 'e.g. Size')}" style="width:150px" aria-label="Name for column ${c + 1}">` : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${missing.length ? `<p class="chip warn">Choose which column has ${missing.join(' and ')}.</p>` : ''}
     <label class="row small"><input type="checkbox" id="mp-head" ${I.header ? 'checked' : ''}> The first row is a header</label>
     <div class="tablebox"><table><thead><tr><th>Item</th><th>Details</th><th class="num">Price</th></tr></thead><tbody>${rows.slice(0, 6).map(r => `<tr><td class="ar">${esc(r[0])}</td><td class="ar">${esc(r[2])}</td><td class="num">${fmt(r[1])}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No rows with both a name and a price. Check the columns above.</td></tr>'}</tbody></table></div>
     ${I.sid && rows.length ? reportHtml(priceReport(I.sid, rows)) : ''}
     <div class="row"><button class="btn primary" id="mp-go" ${rows.length ? '' : 'disabled'}>Import ${rows.length.toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button></div>`;
-  for (const [id, f] of [['mp-name', 'name'], ['mp-price', 'price'], ['mp-detail', 'detail'], ['mp-cat', 'category']]) $('#' + id).onchange = e => { I.map[f] = +e.target.value; renderMapping(); };
+  box.querySelectorAll('[data-coluse]').forEach(sel => sel.onchange = () => { setUse(I, +sel.dataset.coluse, sel.value); renderMapping(); });
+  box.querySelectorAll('[data-collabel]').forEach(inp => inp.onchange = () => { I.cols[+inp.dataset.collabel].label = inp.value.trim(); renderMapping(); });
   $('#mp-head').onchange = e => { I.header = e.target.checked; renderMapping(); };
   $('#mp-cancel').onclick = () => { S.importState = null; render(); };
   $('#mp-go').onclick = () => doImport(rows);
@@ -743,9 +782,10 @@ async function doImport(rows) {
   try {
     for (let c = 0; c < chunks.length; c++) await S.db.doc('items/' + sid + '-' + c).set({ sid, chunk: c, rows: rowsToDb(chunks[c]) });
     for (let c = chunks.length; c < old; c++) await S.db.doc('items/' + sid + '-' + c).delete();
-    await S.db.doc('suppliers/' + sid).set({ name, file: I.file, date: I.date || '', chunks: chunks.length, count: rows.length, order: S.suppliers[sid]?.order ?? Object.keys(S.suppliers).length, ...(lastChange ? { lastChange } : {}) });
+    await S.db.doc('suppliers/' + sid).set({ name, file: I.file, date: I.date || '', chunks: chunks.length, count: rows.length, order: S.suppliers[sid]?.order ?? Object.keys(S.suppliers).length, ...(lastChange ? { lastChange } : {}),
+      ...(I.cols ? { header: I.header, columns: I.cols.map((x, c) => ({ header: headText(I, c), use: x.use, label: x.label, c })).sort((a, b) => (I.cols[a.c].rank ?? 1000 + a.c) - (I.cols[b.c].rank ?? 1000 + b.c)).map(({ c, ...x }) => ({ ...x, col: c })) } : S.suppliers[sid]?.columns ? { header: S.suppliers[sid].header, columns: S.suppliers[sid].columns } : {}) });
     S.importState = null; S.pendingImport = { sid, chunks: chunks.length }; toast(`Imported ${rows.length.toLocaleString()} items from ${name}`);
-    render();
+    changed(); // the saved rows may already be here (local writes show at once), so check now rather than on the next change
   } catch (e) { console.error(e); toast(e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'The import stopped partway. Try again.'); render(); }
 }
 async function deleteSupplier(sid, btn) {
