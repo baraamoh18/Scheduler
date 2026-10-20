@@ -15,6 +15,7 @@
 <script src="firebase-config.js"></script>
 <script src="table-reader.js"></script>
 <script src="pdf-import.js"></script>
+<script src="matcher.js"></script>
 <style>
 /* Layout: one working column; sticky header with tabs, then a toolbar and a dense, scannable table per tab. */
 :root {
@@ -87,6 +88,11 @@ input.ar { direction: rtl; text-align: right; }
 .chip.best { background: var(--best-bg); color: var(--best); font-weight: 600; }
 .chip.cat { background: var(--accent-weak); color: var(--accent); }
 .chip.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.lvl-high { background: var(--best-bg); color: var(--best); font-weight: 600; }
+.chip.lvl-medium { background: var(--accent-weak); color: var(--accent); }
+.chip.lvl-low { background: var(--warn-bg); color: var(--warn); }
+.warn-text { color: var(--warn); }
+.match-notes { grid-column: 1 / -1; display: flex; gap: 6px 16px; flex-wrap: wrap; }
 td input.margin { width: 74px; text-align: right; }
 td select.buy { max-width: 170px; }
 .sell { font-weight: 600; }
@@ -139,7 +145,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 const S = {
   db: null, ready: false, gated: false,
   suppliers: {}, chunks: {}, links: {}, dismissed: {}, prodOv: {}, settings: null, quotes: {},
-  tab: 'products', q: '', filter: 'all', cat: '', sort: 'name', page: 0,
+  tab: 'products', q: '', filter: 'all', mq: '', mlevel: 'likely', mshow: 80, cat: '', sort: 'name', page: 0,
   quote: loadDraft(), importState: null,
 };
 const DEFAULTS = { defaultMargin: 0.2, mode: 'markup', round: 0, currency: 'ج.م', company: '', catMargins: {} };
@@ -167,7 +173,6 @@ function matches(text, q) {
   const t = norm(text);
   return norm(q).split(' ').every(w => !w || t.includes(w) || (w.length > 3 && w.startsWith('ال') && t.includes(w.slice(2))));
 }
-const tokens = s => norm(s).split(/[\s*×xX\/\-+:]+/).filter(t => t && t !== 'م' && t !== 'سم');
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 
 // ---------- derived data ----------
@@ -227,39 +232,17 @@ function sellPrice(cost, m, st) {
 }
 
 // ---------- matching suggestions ----------
+// Matcher (matcher.js) compares item names: words, sizes and pack words. Details such as a discount
+// column are left out, and a pair whose sizes differ is never suggested.
 let suggestCache = null;
 function suggestions() {
   if (suggestCache) return suggestCache;
-  const prods = D.products;
-  const df = {}, toks = new Map();
-  for (const p of prods) { const t = new Set(tokens(p.name + ' ' + p.detail)); toks.set(p, t); t.forEach(x => df[x] = (df[x] || 0) + 1); }
-  const N = prods.length, w = t => Math.log(1 + N / df[t]);
-  const index = {};
-  for (const p of prods) toks.get(p).forEach(t => { if (df[t] < N * 0.08) (index[t] ||= []).push(p); });
-  const out = [], seenPair = new Set();
-  for (const a of prods) {
-    const sa = new Set(a.offers.map(o => o.sid)), ta = toks.get(a);
-    const cand = new Set();
-    ta.forEach(t => (index[t] || []).forEach(b => { if (b !== a) cand.add(b); }));
-    for (const b of cand) {
-      if (b.offers.some(o => sa.has(o.sid))) continue; // same supplier on both sides
-      const pk = [a.pid, b.pid].sort().join('|');
-      if (seenPair.has(pk) || S.dismissed[pk]) continue;
-      seenPair.add(pk);
-      const tb = toks.get(b); let inter = 0, uni = 0;
-      new Set([...ta, ...tb]).forEach(t => { const x = w(t); uni += x; if (ta.has(t) && tb.has(t)) inter += x; });
-      let score = uni ? inter / uni : 0;
-      const na = [...ta].filter(t => /\d/.test(t)).sort().join(' '), nb = [...tb].filter(t => /\d/.test(t)).sort().join(' ');
-      if (na !== nb) score *= 0.6; // sizes or counts differ, so probably a different variant
-      if (score >= 0.45) out.push({ a, b, score, pk });
-    }
-  }
-  out.sort((x, y) => y.score - x.score);
-  // keep each product's two strongest candidates so one item can't flood the list
-  const used = {};
-  const kept = out.filter(s => { const ok = (used[s.a.pid] || 0) < 2 && (used[s.b.pid] || 0) < 2; if (ok) { used[s.a.pid] = (used[s.a.pid] || 0) + 1; used[s.b.pid] = (used[s.b.pid] || 0) + 1; } return ok; });
-  return (suggestCache = kept);
+  const items = D.products.map(p => ({ pid: p.pid, name: p.offers[0].name, detail: p.offers[0].detail, sids: new Set(p.offers.map(o => o.sid)), price: p.best.price, p }));
+  return (suggestCache = Matcher.suggest(items, { dismissed: S.dismissed }).map(s => ({ ...s, a: s.a.p, b: s.b.p })));
 }
+const likely = list => list.filter(s => s.level !== 'low');
+const LEVEL_TEXT = { high: 'Very likely', medium: 'Possible', low: 'Weak' };
+const levelChip = l => `<span class="chip lvl-${l}">${LEVEL_TEXT[l]}</span>`;
 
 // ---------- db ----------
 const queues = {};
@@ -288,7 +271,7 @@ function changed() {
   suggestCache = null; derive();
   const pi = S.pendingImport; // once a fresh import has arrived, show what can be matched
   if (pi && S.suppliers[pi.sid]?.chunks === pi.chunks && [...Array(pi.chunks).keys()].every(c => S.chunks[pi.sid + '-' + c])) {
-    S.pendingImport = null; S.tab = suggestions().length ? 'matching' : 'products';
+    S.pendingImport = null; S.tab = likely(suggestions()).length ? 'matching' : 'products';
   }
   scheduleRender();
 }
@@ -366,7 +349,7 @@ function render() {
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === S.tab));
   $('#cnt-sup').textContent = Object.keys(S.suppliers).length;
   $('#cnt-quote').textContent = S.quote.lines.length;
-  $('#cnt-match').textContent = S.ready && D.products.length ? suggestions().length : 0;
+  $('#cnt-match').textContent = S.ready && D.products.length ? likely(suggestions()).length : 0;
   if (S.ready) $('#sub').textContent = `${D.products.length.toLocaleString()} products from ${Object.keys(S.suppliers).length} suppliers`;
   const v = $('#view');
   if (!S.ready) { v.innerHTML = `<div class="panel"><h2>Loading your price lists…</h2><p class="muted">Products, suppliers and quotes appear here once your saved data arrives.</p></div>`; return; }
@@ -470,7 +453,7 @@ function openProduct(pid) {
   const dlg = $('#dlg');
   const ov = S.prodOv[pid] || {};
   const st = settings();
-  const sugg = suggestions().filter(s => s.a === p || s.b === p).slice(0, 5).map(s => s.a === p ? s.b : s.a);
+  const sugg = suggestions().filter(s => s.a === p || s.b === p).slice(0, 5).map(s => Object.assign(Object.create(s.a === p ? s.b : s.a), { level: s.level }));
   dlg.innerHTML = `<div class="dlg">
     <div class="dlg-head"><h3 class="ar">${esc(p.name)}</h3><button class="btn small" data-close>Close</button></div>
     <div class="grid2">
@@ -507,7 +490,7 @@ function openProduct(pid) {
 }
 function linkRows(list, p) {
   if (!list.length) return `<tr><td class="empty">No likely matches found. Search above by name.</td></tr>`;
-  return list.map(x => `<tr><td class="ar">${esc(x.name)}${x.detail ? ' · ' + esc(x.detail) : ''}</td><td class="small muted">${esc([...new Set(x.offers.map(o => o.sup))].join(', '))}</td><td class="num">${fmt(x.best.price)}</td><td><button class="btn small primary" data-merge="${esc(x.pid)}" data-into="${esc(p.pid)}">Same product</button></td></tr>`).join('');
+  return list.map(x => `<tr><td class="ar">${x.level ? levelChip(x.level) + ' ' : ''}${esc(x.name)}${x.detail ? ' · ' + esc(x.detail) : ''}</td><td class="small muted">${esc([...new Set(x.offers.map(o => o.sup))].join(', '))}</td><td class="num">${fmt(x.best.price)}</td><td><button class="btn small primary" data-merge="${esc(x.pid)}" data-into="${esc(p.pid)}">Same product</button></td></tr>`).join('');
 }
 function merge(fromPid, intoPid) {
   const from = D.byPid[fromPid]; if (!from) return;
@@ -518,15 +501,34 @@ function split(key) { S.links[key] = 'p-' + Date.now().toString(36) + Math.rando
 
 // ---------- matching ----------
 function renderMatching(v) {
-  const list = suggestions().slice(0, 60);
+  const all = suggestions(), q = S.mq.trim();
+  const count = l => all.filter(s => s.level === l).length;
+  // a search shows every candidate for those items, weak ones included
+  const list = q ? all.filter(s => matches(s.a.name + ' ' + s.b.name, q))
+    : S.mlevel === 'all' ? all : S.mlevel === 'high' ? all.filter(s => s.level === 'high') : likely(all);
+  const shown = list.slice(0, S.mshow);
+  const side = (p, only) => `<div><div class="ar" style="font-weight:500">${esc(p.name)}</div>
+    <div class="small muted ar">${p.detail ? esc(p.detail) + ' · ' : ''}${esc(p.best.sup)} ${fmt(p.best.price)}</div>
+    ${only.length ? `<div class="small ar">Only in this name: <b>${only.map(esc).join('، ')}</b></div>` : ''}</div>`;
   v.innerHTML = `<div class="panel"><h2>Possible matches</h2>
-    <p class="muted">Items from different suppliers whose names look alike. Confirm the ones that are the same product so their prices are compared side by side. You can also link items by hand from any product's page.</p></div>
-    <div class="tablebox">${list.length ? list.map(s => `<div class="match-row">
-      <div><div class="ar" style="font-weight:500">${esc(s.a.name)}</div><div class="small muted ar">${esc(s.a.detail)} · ${esc(s.a.best.sup)} ${fmt(s.a.best.price)}</div></div>
-      <div class="score">${Math.round(s.score * 100)}% alike</div>
-      <div><div class="ar" style="font-weight:500">${esc(s.b.name)}</div><div class="small muted ar">${esc(s.b.detail)} · ${esc(s.b.best.sup)} ${fmt(s.b.best.price)}</div></div>
+    <p class="muted">Items from different suppliers whose names look alike. Names are compared after writing digits, sizes and spelling the same way (٥سم = 5 سم, ى = ي). Items with a different size are never suggested, and the discount or stock columns are ignored. Each pair says why it was suggested and what differs, so you decide. Nothing is linked until you press Same product.</p>
+    <div class="stats"><div class="stat"><b>${count('high')}</b><span>very likely: same words and size</span></div><div class="stat"><b>${count('medium')}</b><span>possible: one name has extra words, or the price or pack looks different</span></div><div class="stat"><b>${count('low')}</b><span>weak: same kind and size, different brand words</span></div></div>
+    <div class="row">
+      <input class="grow" id="mq" type="search" placeholder="Check one kind of item, e.g. شاش" value="${esc(S.mq)}" aria-label="Search matches">
+      <select id="mlevel" aria-label="Show" ${q ? 'disabled' : ''}><option value="likely">Very likely and possible</option><option value="high">Only very likely</option><option value="all">All, including weak</option></select>
+    </div></div>
+    <div class="tablebox">${shown.length ? shown.map(s => `<div class="match-row">
+      ${side(s.a, s.onlyA)}
+      <div class="score">${levelChip(s.level)}<div>${Math.round(s.score * 100)}% alike</div></div>
+      ${side(s.b, s.onlyB)}
       <div class="row"><button class="btn small primary" data-merge="${esc(s.b.pid)}" data-into="${esc(s.a.pid)}">Same product</button><button class="btn small" data-dismiss="${esc(s.pk)}">Different</button></div>
-    </div>`).join('') : `<div class="empty">No likely matches between your suppliers right now. When you add a list that sells the same kinds of items, suggestions appear here.</div>`}</div>`;
+      ${s.notes.length ? `<div class="match-notes small">${s.notes.map(n => `<span class="${n.ok ? 'muted' : 'warn-text'}">${n.ok ? '✓' : '!'} ${esc(n.text)}</span>`).join('')}</div>` : ''}
+    </div>`).join('') : `<div class="empty">${q ? 'No items from different suppliers look alike for this search. Each supplier may call it differently: try a shorter word, or link items by hand from a product page.' : 'No likely matches between your suppliers right now. Choose "All, including weak" to see more, or search for one kind of item.'}</div>`}
+    ${list.length > shown.length ? `<div class="pager"><span class="muted small">${shown.length} of ${list.length} shown</span><button class="btn small" id="mmore">Show more</button></div>` : ''}</div>`;
+  $('#mlevel').value = S.mlevel;
+  const mq = $('#mq'); mq.oninput = () => { S.mq = mq.value; S.mshow = 80; clearTimeout(mq.t); mq.t = setTimeout(() => { render(); const n = $('#mq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 200); };
+  $('#mlevel').onchange = e => { S.mlevel = e.target.value; S.mshow = 80; render(); };
+  if ($('#mmore')) $('#mmore').onclick = () => { S.mshow += 80; render(); };
 }
 
 // ---------- suppliers & import ----------

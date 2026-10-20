@@ -13,7 +13,7 @@ Everything here is on free plans. It takes about 20 minutes, once.
 
 ## 2. GitHub Pages (where the website lives)
 
-1. Put these files in the repository: `index.html`, `table-reader.js`, `pdf-import.js`, `firebase-config.js`.
+1. Put these files in the repository: `index.html`, `table-reader.js`, `pdf-import.js`, `matcher.js`, `firebase-config.js`.
 2. In the repository, open **Settings > Pages**, set **Source** to *Deploy from a branch*, choose `main` and `/ (root)`, and save.
 3. After a minute the site is at `https://YOUR-GITHUB-NAME.github.io/REPOSITORY-NAME/`.
 
