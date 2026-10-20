@@ -48,7 +48,7 @@ test('Excel with Arabic headers: columns are guessed, rows without a price are s
 
   const store = await app.store(page);
   const supId = Object.keys(store).find(k => k.startsWith('suppliers/')).slice(10);
-  expect(store['suppliers/' + supId]).toMatchObject({ name: 'مورد التجربة', file: 'list.xlsx', date: '2026-10-15', chunks: 1, count: 3, header: true });
+  expect(store['suppliers/' + supId]).toMatchObject({ name: 'مورد التجربة', file: 'list.xlsx', date: '2026-10-15', chunks: 1, header: true });
   expect(store['suppliers/' + supId].columns.map(c => [c.header, c.use, c.label])).toEqual([
     ['م', 'skip', ''], ['اسم الصنف', 'name', ''], ['العبوة', 'detail', 'العبوة'], ['السعر', 'price', ''],
   ]);

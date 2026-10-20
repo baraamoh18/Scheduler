@@ -79,8 +79,8 @@ test('pages of 100 with Next and Previous', async ({ page, openApp }) => {
   await expect(page.locator('.pager .muted')).toHaveText('150 shown · page 1 of 2');
   // a new search goes back to page 1
   await page.locator('#next').click();
-  await page.locator('#q').fill('Item 14');
-  await expect(page.locator('.pager .muted')).toHaveText('12 shown · page 1 of 1') // 014, 114 and 140-149;
+  await page.locator('#q').fill('Item 014');
+  await expect(page.locator('.pager .muted')).toHaveText('1 shown · page 1 of 1'); // numbers match whole, so 140 doesn't count
 });
 
 test('a product margin overrides the default and can be cleared', async ({ page, openApp }) => {
@@ -193,8 +193,8 @@ test('full costing sheet download: suppliers, best price, buying from, margin an
   await link(page, 'شاش طبي 10 سم', 'شاش طبى', 'شاش طبى ١٠سم');
   const x = await app.download(page, () => page.locator('#exp-int').click());
   expect(x.name).toMatch(/^Costing sheet /);
-  expect(x.rows[0]).toEqual(['Product', 'Details', 'Category', 'Unit', 'Suppliers', 'Best price', 'Best supplier', 'Buying from', 'Cost', 'Margin %', 'Sell price', 'Profit']);
+  expect(x.rows[0]).toEqual(['Product', 'Details', 'Category', 'Unit', 'Suppliers (cheapest first)', 'Best price', 'Best supplier', 'Buying from', 'Listed price', 'Discount %', 'Pieces per pack', 'Cost', 'Margin %', 'Sell price', 'Profit']);
   const gauze = x.rows.find(r => r[0] === 'شاش طبي 10 سم × 10 سم');
-  expect(gauze).toEqual(['شاش طبي 10 سم × 10 سم', '', 'شاش', '', 'النيل الطبية: 25 | الدلتا للمستلزمات: 22', 22, 'الدلتا للمستلزمات', 'الدلتا للمستلزمات', 22, 20, 26.4, 4.4]);
+  expect(gauze).toEqual(['شاش طبي 10 سم × 10 سم', '', 'شاش', '', 'الدلتا للمستلزمات: 22 | النيل الطبية: 25', 22, 'الدلتا للمستلزمات', 'الدلتا للمستلزمات', 22, 0, 1, 22, 20, 26.4, 4.4]);
   expect(x.rows).toHaveLength(11);
 });

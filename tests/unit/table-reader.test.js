@@ -97,3 +97,9 @@ test('piecesFromOcr drops low-confidence words and keeps line numbers', () => {
   const ps = T.piecesFromOcr([{ bbox: { y0: 0, y1: 20 }, words: [{ text: 'شاش', confidence: 90, bbox: { x0: 0, x1: 10, y0: 0, y1: 20 } }, { text: '??', confidence: 10, bbox: { x0: 0, x1: 1, y0: 0, y1: 1 } }] }]);
   assert.deepEqual(ps.map(p => [p.str, p.line]), [['شاش', 0]]);
 });
+
+test('an item whose price cell has no number is kept without a price, not glued to the row above', () => {
+  const { rows } = T.readPieces(rtlTable([['شاش طبي', '25'], ['كمامة طبية', '—'], ['سرنجة', '2']]));
+  assert.deepEqual(rows.map(r => r.name), ['شاش طبي', 'كمامة طبية', 'سرنجة']);
+  assert.ok(Number.isNaN(rows[1].price));
+});

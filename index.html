@@ -6,9 +6,7 @@
 <title>Supply Price Desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Readex+Pro:wght@500;600&display=swap">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
@@ -153,11 +151,11 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 // ---------- state ----------
 const S = {
   db: null, ready: false, gated: false,
-  suppliers: {}, chunks: {}, links: {}, dismissed: {}, prodOv: {}, settings: null, quotes: {},
+  suppliers: {}, chunks: {}, links: {}, dismissed: {}, packs: {}, prodOv: {}, settings: null, quotes: {},
   tab: 'products', q: '', filter: 'all', mq: '', mlevel: 'likely', mshow: 80, cq: '', cmulti: false, cat: '', sort: 'name', page: 0,
   quote: loadDraft(), importState: null,
 };
-const DEFAULTS = { defaultMargin: 0.2, mode: 'markup', round: 0, currency: 'ج.م', company: '', catMargins: {}, fields: {} };
+const DEFAULTS = { defaultMargin: 0.2, mode: 'markup', round: 0, currency: 'ج.م', company: '', catMargins: {}, fields: {}, perPiece: true };
 // columns people add themselves while uploading (e.g. تجاري, صيدلي): settings.fields = {id: {name, order}}
 const userFields = () => Object.entries(settings().fields || {}).map(([id, f]) => ({ id, ...f })).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 function saveField(id, patch) {
@@ -170,12 +168,12 @@ function deleteField(id) {
 }
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = n => (n == null || isNaN(n)) ? '–' : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmt = n => (n == null || isNaN(n)) ? '–' : Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: n && Math.abs(n) < 1 ? 4 : 2 });
 const pct = m => (m == null || isNaN(m)) ? '' : +(m * 100).toFixed(2);
 const settings = () => Object.assign({}, DEFAULTS, S.settings || {});
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2600); }
 function loadDraft() {
-  try { const q = JSON.parse(localStorage.getItem('quoteDraft')); if (q) q.lines.forEach(l => l.manual ??= l.price != null); return q || newQuote(); } catch { return newQuote(); }
+  try { return JSON.parse(localStorage.getItem('quoteDraft')) || newQuote(); } catch { return newQuote(); }
 }
 function saveDraft() { try { localStorage.setItem('quoteDraft', JSON.stringify(S.quote)); } catch {} }
 function newQuote() { return { id: null, customer: '', date: new Date().toISOString().slice(0, 10), notes: '', lines: [] }; }
@@ -188,9 +186,11 @@ function norm(s) {
     .replace(/([؀-ۿ])\1{2,}/g, '$1').toLowerCase().replace(/[()\[\]{}"'،,]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 // true when every word of the query appears somewhere in the text, in any order
+// a number in the query matches whole numbers only, so 10 finds "10 سم" but not 100
 function matches(text, q) {
   const t = norm(text);
-  return norm(q).split(' ').every(w => !w || t.includes(w) || (w.length > 3 && w.startsWith('ال') && t.includes(w.slice(2))));
+  return norm(q).split(' ').every(w => !w || (/^\d+(\.\d+)?$/.test(w) ? new RegExp('(^|[^\\d.])' + w.replace('.', '\\.') + '(?![\\d]|\\.\\d)').test(t)
+    : t.includes(w) || (w.length > 3 && w.startsWith('ال') && t.includes(w.slice(2)))));
 }
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 
@@ -214,7 +214,11 @@ function derive() {
         const [name, price, detail, source, category, prev, extra] = r;
         const key = sup.id + ':' + offerKey(name, detail, seen);
         const own = 'o-' + sup.id + '-' + key.slice(sup.id.length + 1).replace('.', '-');
-        offers.push({ key, sid: sup.id, sup: sup.name, name, price: +price, prev: +prev || 0, extra: extra || {}, detail: detail || '', source: source || '', category: category || '', pid: S.links[key] || own });
+        const x = extra || {}, set = S.packs[key] || {};
+        const pack = set.pack || +x.pack || 1, disc = set.disc ?? (x.disc != null && x.disc !== '' ? +x.disc : discountIn(detail)) ?? 0;
+        // net: what one piece really costs after the supplier's discount; prices are compared on this
+        const net = st.perPiece ? +price * (1 - disc / 100) / pack : +price;
+        offers.push({ key, sid: sup.id, sup: sup.name, name, price: +price, pack, disc, net, prev: +prev || 0, extra: x, detail: detail || '', source: source || '', category: category || '', pid: S.links[key] || own });
       });
     }
   }
@@ -229,16 +233,16 @@ function derive() {
     p.category = ov.category ?? (p.offers.find(o => o.category)?.category || '');
     if (p.category) cats.add(p.category);
     const priced = p.offers.filter(o => o.price > 0); // a 0 or missing price is never the cheapest
-    const sorted = [...(priced.length ? priced : p.offers)].sort((a, b) => a.price - b.price);
+    const sorted = [...(priced.length ? priced : p.offers)].sort((a, b) => a.net - b.net);
     p.best = sorted[0]; p.high = sorted[sorted.length - 1];
     p.nSup = new Set(p.offers.map(o => o.sid)).size;
     p.chosenSid = ov.chosen || '';
     const chosen = p.chosenSid ? sorted.find(o => o.sid === p.chosenSid) : null;
     p.buy = chosen || p.best;
-    p.cost = p.buy.price;
+    p.cost = p.buy.net;
     // extra columns come from the supplier you buy from, else from any supplier that has them
     const extra = k => { const v = p.buy.extra[k] ?? p.offers.find(o => o.extra[k] != null && o.extra[k] !== '')?.extra[k]; return v == null ? '' : v; };
-    p.unit = ov.unit || String(extra('unit'));
+    p.unit = ov.unit || (st.perPiece && p.buy.pack > 1 ? 'قطعة' : String(extra('unit')));
     p.extra = {}; for (const f of fieldList) { const v = extra(f.id); if (v !== '') { p.extra[f.id] = v; fieldsUsed.add(f.id); } }
     p.marginOv = ov.margin;
     p.margin = ov.margin ?? st.catMargins[p.category] ?? st.defaultMargin;
@@ -246,6 +250,24 @@ function derive() {
     p.profit = p.sell - p.cost;
   }
   D = { offers, byPid, products: Object.values(byPid), cats: [...cats].sort(), fields: fieldList.filter(f => fieldsUsed.has(f.id)) };
+}
+// a discount given as a detail column, like "خصم: 28" or "Discount %: 10"
+function discountIn(detail) {
+  for (const part of String(detail || '').split(' · ')) {
+    const m = part.match(/^\s*(?:نسب[ةه] )?(?:ال)?خصم[^:]*:|^\s*discount[^:]*:/i);
+    if (m) { const n = TableReader.parsePrice(part.slice(m[0].length)); if (n >= 0 && n < 100) return n; }
+  }
+  return null;
+}
+// "28% off, 10 per pack: 7.20 a piece"
+function netText(o) {
+  if (o.net === o.price) return '';
+  return [o.disc ? `${+o.disc}% off` : '', o.pack > 1 ? `${o.pack} per pack` : ''].filter(Boolean).join(', ') + `: ${fmt(o.net)} a piece`;
+}
+// with margin on the sale price, 100% or more has no sell price
+function marginOk(n) {
+  if (settings().mode !== 'margin' || isNaN(n) || n < 100) return true;
+  toast('With the margin taken from the sale price, a margin must be under 100%.'); return false;
 }
 function sellPrice(cost, m, st) {
   let s = st.mode === 'margin' ? (m < 1 ? cost / (1 - m) : NaN) : cost * (1 + m);
@@ -261,9 +283,9 @@ function sellPrice(cost, m, st) {
 let suggestCache = null, suggestRaw = null, suggestSig = '';
 function suggestions() {
   if (suggestCache) return suggestCache;
-  const sig = Object.keys(S.dismissed).join(',') + '#' + D.products.map(p => p.pid + ':' + p.offers.map(o => o.key).join(',') + ':' + p.best.price).join('|');
+  const sig = Object.keys(S.dismissed).join(',') + '#' + D.products.map(p => p.pid + ':' + p.offers.map(o => o.key).join(',') + ':' + p.best.net).join('|');
   if (sig !== suggestSig) {
-    const items = D.products.map(p => ({ pid: p.pid, name: p.offers[0].name, detail: p.offers[0].detail, sids: new Set(p.offers.map(o => o.sid)), price: p.best.price }));
+    const items = D.products.map(p => ({ pid: p.pid, name: p.offers[0].name, detail: p.offers[0].detail, sids: new Set(p.offers.map(o => o.sid)), price: p.best.net }));
     suggestRaw = Matcher.suggest(items, { dismissed: S.dismissed }); suggestSig = sig;
   }
   return (suggestCache = suggestRaw.map(s => ({ ...s, a: D.byPid[s.a.pid], b: D.byPid[s.b.pid] })));
@@ -288,6 +310,8 @@ const MERGE = { merge: true };
 const DEL = () => firebase.firestore.FieldValue.delete();
 function saveLinks(keys) { return setDoc('matching/links', { map: Object.fromEntries(keys.map(k => [k, S.links[k]])) }, MERGE); }
 function saveDismissed(pk) { return setDoc('matching/dismissed', { map: { [pk]: true } }, MERGE); }
+// an item's pieces per pack and discount set by hand: matching/packs = {map: {offer key: {pack, disc}}}
+function savePack(key) { return setDoc('matching/packs', { map: { [key]: S.packs[key] ?? DEL() } }, MERGE); }
 // fields: the product fields that changed; a field missing from S.prodOv[pid] is removed
 function saveOv(pid, fields) {
   const ov = S.prodOv[pid] || {};
@@ -365,8 +389,8 @@ function listen(db) {
     db.collection('products').onSnapshot(once(s => { S.prodOv = {}; s.docs.forEach(d => S.prodOv[d.id] = { ...d.data() }); }), err),
     db.collection('quotes').onSnapshot(once(s => { S.quotes = {}; s.docs.forEach(d => S.quotes[d.id] = { id: d.id, ...d.data() }); }), err),
     db.collection('matching').onSnapshot(once(s => {
-      S.links = {}; S.dismissed = {};
-      s.docs.forEach(d => { if (d.id === 'links') S.links = { ...(d.data().map || {}) }; if (d.id === 'dismissed') S.dismissed = { ...(d.data().map || {}) }; });
+      S.links = {}; S.dismissed = {}; S.packs = {};
+      s.docs.forEach(d => { if (['links', 'dismissed', 'packs'].includes(d.id)) S[d.id] = { ...(d.data().map || {}) }; });
     }), err),
     db.doc('settings/main').onSnapshot(once(d => { S.settings = d.exists ? d.data() : null; }), err),
   );
@@ -394,7 +418,7 @@ function filtered() {
     if (S.cat && p.category !== S.cat) return false;
     return !q || matches(p.name + ' ' + p.detail + ' ' + p.category, q);
   });
-  const by = { name: (a, b) => a.name.localeCompare(b.name, 'ar'), best: (a, b) => a.best.price - b.best.price, bestd: (a, b) => b.best.price - a.best.price, offers: (a, b) => b.nSup - a.nSup || a.name.localeCompare(b.name, 'ar'), saving: (a, b) => (b.high.price - b.best.price) - (a.high.price - a.best.price) }[S.sort];
+  const by = { name: (a, b) => a.name.localeCompare(b.name, 'ar'), best: (a, b) => a.best.net - b.best.net, bestd: (a, b) => b.best.net - a.best.net, offers: (a, b) => b.nSup - a.nSup || a.name.localeCompare(b.name, 'ar'), saving: (a, b) => (b.high.net - b.best.net) - (a.high.net - a.best.net) }[S.sort];
   return list.sort(by);
 }
 
@@ -459,7 +483,7 @@ function trend(o) {
 }
 function rowHtml(p) {
   const st = settings();
-  const prices = [...p.offers].sort((a, b) => a.price - b.price).map(o => `<span class="chip ${p.nSup > 1 && o === p.best ? 'best' : ''}">${esc(o.sup)} ${fmt(o.price)}${trend(o)}</span>`).join('');
+  const prices = [...p.offers].sort((a, b) => a.net - b.net).map(o => `<span class="chip ${p.nSup > 1 && o === p.best ? 'best' : ''}" title="${esc(netText(o))}">${esc(o.sup)} ${fmt(o.price)}${o.net !== o.price ? ` → ${fmt(o.net)}` : ''}${trend(o)}</span>`).join('');
   const supIds = [...new Set(p.offers.map(o => o.sid))];
   const buy = p.nSup > 1
     ? `<select class="buy" data-pid="${esc(p.pid)}" aria-label="Buy from"><option value="">Cheapest (${esc(p.best.sup)})</option>${supIds.map(id => `<option value="${esc(id)}" ${p.chosenSid === id ? 'selected' : ''}>${esc(S.suppliers[id]?.name || id)}</option>`).join('')}</select>`
@@ -482,6 +506,7 @@ function rowHtml(p) {
 function extraText(o) {
   const parts = [];
   if (o.extra.unit) parts.push('Unit: ' + o.extra.unit);
+  if (netText(o)) parts.push(netText(o));
   for (const f of userFields()) if (o.extra[f.id] != null && o.extra[f.id] !== '') parts.push(f.name + ': ' + o.extra[f.id]);
   return parts.join(' · ');
 }
@@ -502,15 +527,19 @@ function openProduct(pid) {
     </div>
     <div class="row"><button class="btn primary" id="pd-save">Save details</button><span class="muted small">Leave a field empty to use the supplier's text.</span></div>
     <h3>Supplier prices</h3>
-    <div class="tablebox"><table><thead><tr><th>Supplier</th><th>Their item name</th><th class="num">Price</th><th>Source</th><th></th></tr></thead><tbody>
-      ${[...p.offers].sort((a, b) => a.price - b.price).map(o => `<tr><td>${esc(o.sup)}${o === p.best && p.nSup > 1 ? ' <span class="chip best">best</span>' : ''}</td><td class="ar">${esc(o.name)}${o.detail ? ' · ' + esc(o.detail) : ''}${extraText(o) ? `<div class="small muted">${esc(extraText(o))}</div>` : ''}</td><td class="num">${fmt(o.price)}</td><td class="small muted">${esc(o.source)}</td><td>${p.offers.length > 1 ? `<button class="btn small" data-split="${esc(o.key)}">Not the same</button>` : ''}</td></tr>`).join('')}
+    <div class="tablebox"><table><thead><tr><th>Supplier</th><th>Their item name</th><th class="num">Price</th><th class="num">Discount %</th><th class="num">Pieces per pack</th><th class="num">${st.perPiece ? 'Net per piece' : 'Net'}</th><th>Source</th><th></th></tr></thead><tbody>
+      ${[...p.offers].sort((a, b) => a.net - b.net).map(o => { const set = S.packs[o.key] || {}; return `<tr><td>${esc(o.sup)}${o === p.best && p.nSup > 1 ? ' <span class="chip best">best</span>' : ''}</td><td class="ar">${esc(o.name)}${o.detail ? ' · ' + esc(o.detail) : ''}${extraText(o) ? `<div class="small muted">${esc(extraText(o))}</div>` : ''}</td><td class="num">${fmt(o.price)}</td>
+        <td class="num"><input type="number" min="0" max="99" step="0.5" style="width:70px;text-align:right" data-disc="${esc(o.key)}" data-for="${esc(pid)}" value="${set.disc ?? ''}" placeholder="${+o.disc}" aria-label="Discount percent"></td>
+        <td class="num"><input type="number" min="1" step="1" style="width:70px;text-align:right" data-pack="${esc(o.key)}" data-for="${esc(pid)}" value="${set.pack ?? ''}" placeholder="${o.pack}" aria-label="Pieces per pack"></td>
+        <td class="num">${fmt(o.net)}</td><td class="small muted">${esc(o.source)}</td><td>${p.offers.length > 1 ? `<button class="btn small" data-split="${esc(o.key)}">Not the same</button>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>
+    <p class="small muted">${st.perPiece ? 'Suppliers are compared on the net price of one piece: the listed price, less the discount, divided by the pieces per pack. Leave a box empty to use what the price list says.' : 'Suppliers are compared on their listed prices (Settings). Discounts and pack sizes are kept for when you switch to price per piece.'}</p>
     <p class="small muted">Selling at ${fmt(p.sell)} ${esc(st.currency)} with a ${pct(p.margin)}% ${st.mode === 'margin' ? 'margin' : 'markup'} on a cost of ${fmt(p.cost)} from ${esc(p.buy.sup)}.</p>
     <h3>Link the same product from another supplier</h3>
     <input id="pd-search" type="search" placeholder="Search other suppliers' items" aria-label="Search items to link">
     <div class="tablebox"><table><tbody id="pd-results">${linkRows(sugg, p)}</tbody></table></div>
   </div>`;
-  dlg.showModal();
+  if (!dlg.open) dlg.showModal();
   dlg.querySelector('[data-close]').onclick = () => dlg.close();
   $('#pd-save').onclick = () => {
     const next = { ...(S.prodOv[pid] || {}) };
@@ -587,14 +616,14 @@ function renderCompare(v) {
   const cols = sups.filter(s => list.some(r => r.sids.has(s.id)));
   const TOO_MANY = 400, shown = offers.length > TOO_MANY ? [] : list;
   const cell = (r, sid) => {
-    const os = r.os.filter(o => o.sid === sid).sort((a, b) => a.price - b.price);
-    const min = Math.min(...r.os.filter(o => o.price > 0).map(o => o.price));
-    return `<td class="grid-cell">${os.map(o => `<div class="offer ${r.sids.size > 1 && o.price === min ? 'cheapest' : ''}">
+    const os = r.os.filter(o => o.sid === sid).sort((a, b) => a.net - b.net);
+    const min = Math.min(...r.os.filter(o => o.price > 0).map(o => o.net));
+    return `<td class="grid-cell">${os.map(o => `<div class="offer ${r.sids.size > 1 && o.net === min ? 'cheapest' : ''}">
       <button class="ar" data-open="${esc(o.pid)}">${esc(o.name)}</button>
-      <b>${fmt(o.price)}</b>${trend(o)}${(D.byPid[o.pid]?.nSup || 0) > 1 ? ' <span class="chip">linked</span>' : ''}${r.sids.size > 1 && o.price === min ? ' <span class="chip best">cheapest</span>' : ''}</div>`).join('')}</td>`;
+      <b>${fmt(o.price)}</b>${o.net !== o.price ? ` <span class="small muted" title="${esc(netText(o))}">→ ${fmt(o.net)}</span>` : ''}${trend(o)}${(D.byPid[o.pid]?.nSup || 0) > 1 ? ' <span class="chip">linked</span>' : ''}${r.sids.size > 1 && o.net === min ? ' <span class="chip best">cheapest</span>' : ''}</div>`).join('')}</td>`;
   };
   v.innerHTML = `<div class="panel"><h2>Compare one kind of item</h2>
-    <p class="muted">Search for an item, like شاش or رباط ضاغط. Sizes run down the side and suppliers across the top, so you can see who sells each size and who is cheapest. Prices are as each supplier lists them: a price several times higher usually means a box or pack, not one piece. Open an item to link it with the same product from another supplier.</p>
+    <p class="muted">Search for an item, like شاش or رباط ضاغط. Sizes run down the side and suppliers across the top, so you can see who sells each size and who is cheapest. The arrow shows the net price of one piece after the discount and pack size; a listed price several times higher usually means a box, so open the item and set its pieces per pack. Open an item to link it with the same product from another supplier too.</p>
     <div class="row">
       <input class="grow" id="cq" type="search" placeholder="e.g. شاش" value="${esc(S.cq)}" aria-label="Item to compare">
       <label class="row small"><input type="checkbox" id="cmulti" ${S.cmulti ? 'checked' : ''}> Only sizes sold by 2+ suppliers</label>
@@ -628,7 +657,7 @@ function renderSuppliers(v) {
     <div class="grid2">
       <div class="field"><label for="im-file">Price list file</label><input id="im-file" type="file" accept=".xlsx,.xls,.csv,.pdf,image/jpeg,image/png,image/webp"></div>
       <div class="field"><label for="im-name">Supplier name</label><input id="im-name" value="${esc(I?.supName || '')}" placeholder="e.g. Nile Medical" ${I?.sid ? 'disabled' : ''}></div>
-      <div class="field"><label for="im-date">List date</label><input id="im-date" type="date" value="${esc(I?.date || '')}"></div>
+      <div class="field"><label for="im-date">List date</label><input id="im-date" type="date" value="${esc(I?.date ?? fileDate())}"></div>
     </div>
     <div id="im-map"></div>
   </div>`;
@@ -666,23 +695,35 @@ async function readImport(file) {
     const price = priceHead ?? cols.reduce((a, b) => numScore(b) > numScore(a) ? b : a, 0);
     const nameHead = byHead(/(اسم|الصنف|المنتج|البيان|الوصف|product|item|name|description)/i);
     const name = nameHead != null && nameHead !== price ? nameHead : cols.filter(c => c !== price).reduce((a, b) => txtScore(b) > txtScore(a) ? b : a, cols.find(c => c !== price) ?? 0);
-    const cols2 = cols.map(c => ({ use: c === name ? 'name' : c === price ? 'price' : 'skip', label: '' }));
     // no header when nothing reads like one and the first row already has a price
     const header = priceHead != null || nameHead != null || !(typeof raw[0][price] === 'number' || TableReader.isNumber(String(raw[0][price] ?? '')));
-    S.importState = { ...(S.importState || {}), file: file.name, rows: raw, width, header, cols: cols2 };
+    const newFields = {};
+    const cols2 = cols.map(c => {
+      if (c === name || c === price) return { use: c === name ? 'name' : 'price', label: '' };
+      return header ? guessColumn(heads[c].trim(), numScore(c) >= sample.filter(r => r[c] !== '').length * 0.6, newFields) : { use: 'skip', label: '' };
+    });
+    S.importState = { ...(S.importState || {}), file: file.name, rows: raw, width, header, cols: cols2, newFields };
     applySavedColumns(S.importState);
     renderMapping();
   } catch (e) { console.error(e); toast('Could not read that file. Save it as .xlsx or .csv and try again.'); }
 }
 // ---------- PDF and photo import (read in the browser) ----------
 // Pages with a text layer are read directly; scanned pages and photos go through OCR, which is slower.
-function libsReady() {
-  if (typeof pdfjsLib === 'undefined' || typeof Tesseract === 'undefined') { toast('The PDF reader did not load. Reload the page and try again.'); return false; }
+// The PDF and OCR readers are only downloaded the first time someone uploads a PDF or a photo.
+const PDF_LIBS = ['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'];
+const loadScript = src => loadScript[src] ||= new Promise((ok, fail) => {
+  const el = document.createElement('script'); el.src = src; el.onload = ok;
+  el.onerror = () => { delete loadScript[src]; el.remove(); fail(new Error('could not load ' + src)); };
+  document.head.appendChild(el);
+});
+async function libsReady() {
+  try { await Promise.all(PDF_LIBS.map(loadScript)); } catch (e) { console.error(e); }
+  if (typeof pdfjsLib === 'undefined' || typeof Tesseract === 'undefined') { toast('The PDF reader did not load. Check your connection and try again.'); return false; }
   pdfjsLib.GlobalWorkerOptions.workerSrc ||= 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   return true;
 }
 async function readVisual(file, forceOcr = false) {
-  if (!libsReady()) return;
+  if (!(await libsReady())) return;
   S.importAbort?.abort();
   const ctl = S.importAbort = new AbortController();
   const V = { pages: [], rows: [], status: '', forceOcr, view: 0 };
@@ -726,10 +767,11 @@ function drawVisual() {
     </tbody></table>
     <div class="pager"><span class="muted small">Rows ${V.view * PER + 1}–${V.view * PER + shown.length} of ${V.rows.length.toLocaleString()}</span><button class="btn small" data-vpage="-1" ${V.view ? '' : 'disabled'}>Previous</button><button class="btn small" data-vpage="1" ${(V.view + 1) * PER < V.rows.length ? '' : 'disabled'}>Next</button></div></div>` : ''}
     ${I.sid && V.done && V.rows.length && !bad ? reportHtml(priceReport(I.sid, visualRows(V))) : ''}
-    <div class="row"><button class="btn primary" id="mp-go" ${V.done && V.rows.length && !bad ? '' : 'disabled'}>Import ${(V.rows.length - bad).toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button>${bad ? `<span class="chip warn">${bad} rows need a price</span>` : ''}
+    <div class="row"><button class="btn primary" id="mp-go" ${V.done && V.rows.length && !bad ? '' : 'disabled'}>Import ${(V.rows.length - bad).toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button>${bad ? `<span class="chip warn">${bad} rows need a price</span><button class="btn" id="mp-dropbad">Remove the rows without a price</button>` : ''}
       ${V.done && /\.pdf$/i.test(I.file) && !V.forceOcr ? `<button class="btn" id="mp-ocr" title="Use this when the rows look wrong or empty">Rows look wrong? Scan the pages instead</button>` : ''}</div>`;
   $('#mp-cancel').onclick = () => { S.importAbort?.abort(); S.importState = null; render(); };
   $('#mp-go').onclick = () => doImport(visualRows(V));
+  const dropBad = $('#mp-dropbad'); if (dropBad) dropBad.onclick = () => { V.rows = V.rows.filter(r => r.name && r.price > 0); renderVisual(); };
   const ocr = $('#mp-ocr'); if (ocr) ocr.onclick = () => readVisual(I.fileObj, true);
 }
 document.addEventListener('change', e => {
@@ -744,14 +786,29 @@ document.addEventListener('click', e => {
   else if (t.dataset.vpage) { V.view += +t.dataset.vpage; renderVisual(); }
 });
 // ---------- column choices for Excel/CSV ----------
-// I.cols[c] = {use: 'name'|'price'|'detail'|'category'|'unit'|'f:<field id>'|'skip', label}; details columns can be named ("Size: 40").
-const USES = [['name', 'Item name'], ['price', 'Price'], ['detail', 'Details'], ['category', 'Category'], ['unit', 'Unit'], ['skip', "Don't import"]];
+// I.cols[c] = {use: 'name'|'price'|'detail'|'category'|'unit'|'pack'|'disc'|'f:<field id>'|'skip', label}; details columns can be named ("Size: 40").
+const USES = [['name', 'Item name'], ['price', 'Price'], ['detail', 'Details'], ['category', 'Category'], ['unit', 'Unit'], ['pack', 'Pieces per pack'], ['disc', 'Discount %'], ['skip', "Don't import"]];
 const SINGLE = u => u !== 'detail' && u !== 'skip'; // one column each, except details
 const colOf = (I, use) => I.cols.findIndex(c => c.use === use);
 const headText = (I, c) => I.header ? String(I.rows[0][c] ?? '').trim() : '';
 function setUse(I, c, use) {
   if (SINGLE(use)) I.cols.forEach(x => { if (x.use === use) x.use = 'skip'; }); // only one of each
   I.cols[c].use = use; delete I.cols[c].rank;
+}
+// A first guess for the other columns, from their headers: a second price becomes its own column,
+// pieces per pack and discount are used for the price per piece, sizes and colours become details.
+function guessColumn(head, numeric, newFields) {
+  const h = norm(head);
+  if (!h) return { use: 'skip', label: '' };
+  if (/خصم|discount/.test(h)) return { use: 'disc', label: '' };
+  if (/^(ال)?وحده$|^unit$|وحده|pieces|pcs|per pack/.test(h)) return { use: numeric ? 'pack' : 'unit', label: '' };
+  if (/سعر|price|تجاري|صيدلي|جمهور|جمله|قطاعي/.test(h) && numeric) {
+    const same = userFields().find(f => norm(f.name) === h), id = same?.id || 'f' + hash(h);
+    if (!same) newFields[id] = head;
+    return { use: 'f:' + id, label: '' };
+  }
+  if (/مقاس|size|جرام|gsm|gram|وزن|weight|لون|colou?r|نوع|type|موديل|model|طول|length|عرض|width|سمك/.test(h)) return { use: 'detail', label: head };
+  return { use: 'skip', label: '' };
 }
 // reuse the columns chosen the last time this supplier's list was uploaded, matched by header text
 function applySavedColumns(I) {
@@ -776,8 +833,16 @@ function parsedRows() {
   if (name < 0 || price < 0) return [];
   const details = I.cols.map((x, c) => x.use === 'detail' ? c : -1).filter(c => c >= 0).sort((a, b) => (I.cols[a].rank ?? 1000 + a) - (I.cols[b].rank ?? 1000 + b));
   const cell = (r, c) => String(r[c] ?? '').trim();
-  const extras = I.cols.map((x, c) => [x.use === 'unit' ? 'unit' : x.use.startsWith('f:') ? x.use.slice(2) : '', c]).filter(([k]) => k);
-  const extraOf = r => { const x = {}; for (const [k, c] of extras) { const v = cell(r, c); if (v) x[k] = v; } return Object.keys(x).length ? x : undefined; };
+  const extras = I.cols.map((x, c) => [['unit', 'pack', 'disc'].includes(x.use) ? x.use : x.use.startsWith('f:') ? x.use.slice(2) : '', c]).filter(([k]) => k);
+  const numOk = (k, n) => k === 'pack' ? n >= 1 : n >= 0 && n < 100;
+  const extraOf = r => {
+    const x = {};
+    for (const [k, c] of extras) {
+      const v = cell(r, c); if (!v) continue;
+      if (k === 'pack' || k === 'disc') { const n = num(r[c]); if (numOk(k, n)) x[k] = k === 'pack' ? Math.round(n) : n; } else x[k] = v;
+    }
+    return Object.keys(x).length ? x : undefined;
+  };
   return body.map((r, i) => [cell(r, name), num(r[price]),
     details.map(c => { const v = cell(r, c), l = I.cols[c].label.trim(); return v ? (l ? `${l}: ${v}` : v) : ''; }).filter(Boolean).join(' · '),
     'row ' + (i + (I.header ? 2 : 1)), cat >= 0 ? cell(r, cat) : '', undefined, extraOf(r)])
@@ -832,7 +897,9 @@ function renderMapping() {
   const rows = parsedRows();
   const sample = c => { const r = I.rows.slice(I.header ? 1 : 0).find(r => String(r[c] ?? '').trim() !== ''); return r ? String(r[c]).trim().slice(0, 40) : ''; };
   const missing = [colOf(I, 'name') < 0 && 'the item name', colOf(I, 'price') < 0 && 'the price'].filter(Boolean);
-  const fields = userFields(), fieldsById = Object.fromEntries(fields.map(f => [f.id, f]));
+  // columns the guess named but that aren't saved until the import (I.newFields)
+  const fields = [...userFields(), ...Object.entries(I.newFields || {}).filter(([id]) => !(settings().fields || {})[id]).map(([id, name]) => ({ id, name }))];
+  const fieldsById = Object.fromEntries(fields.map(f => [f.id, f]));
   box.innerHTML = `<h3>Columns</h3>
     <p class="small muted">Choose what each column of the file is. You can import several columns as details and give each one the name you want shown, for example "Size" or "المقاس"; leave the name empty to show just the value. Choose <b>+ New column</b> to keep a column under its own name, for example a second price like تجاري or صيدلي; it gets its own column on the Products tab and in the costing sheet, and you can rename it here or in Settings.${I.usedSaved ? ' These are the choices from the last upload of this supplier.' : ''}</p>
     <div class="tablebox"><table><thead><tr><th>Column in the file</th><th>Example</th><th>Use as</th><th>Name to show</th></tr></thead><tbody>
@@ -860,7 +927,11 @@ function renderMapping() {
     } else setUse(I, c, sel.value);
     renderMapping();
   });
-  box.querySelectorAll('[data-fieldname]').forEach(inp => inp.onchange = () => { const n = inp.value.trim(); if (n) saveField(inp.dataset.fieldname, { name: n }); renderMapping(); });
+  box.querySelectorAll('[data-fieldname]').forEach(inp => inp.onchange = () => {
+    const n = inp.value.trim(), id = inp.dataset.fieldname;
+    if (n && I.newFields?.[id] && !(settings().fields || {})[id]) I.newFields[id] = n; else if (n) saveField(id, { name: n });
+    renderMapping();
+  });
   box.querySelectorAll('[data-collabel]').forEach(inp => inp.onchange = () => { I.cols[+inp.dataset.collabel].label = inp.value.trim(); renderMapping(); });
   $('#mp-head').onchange = e => { I.header = e.target.checked; renderMapping(); };
   $('#mp-cancel').onclick = () => { S.importState = null; render(); };
@@ -873,6 +944,8 @@ async function doImport(rows) {
   if (!S.db) { toast('Sign in to save changes.'); return; }
   const sid = I.sid || (name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 's') + '-' + Date.now().toString(36).slice(-4);
   const old = S.suppliers[sid]?.chunks || 0;
+  // columns named by the first guess become real columns now
+  for (const x of I.cols || []) { const id = x.use.startsWith('f:') && x.use.slice(2); if (id && I.newFields?.[id] && !(settings().fields || {})[id]) saveField(id, { name: I.newFields[id], order: userFields().length }); }
   let lastChange = null;
   if (I.sid) {
     const R = priceReport(sid, rows);
@@ -883,17 +956,36 @@ async function doImport(rows) {
   for (let i = 0; i < rows.length; i += 500) chunks.push(rows.slice(i, i + 500));
   $('#mp-go').disabled = true; $('#mp-go').textContent = 'Importing…';
   try {
-    for (let c = 0; c < chunks.length; c++) await S.db.doc('items/' + sid + '-' + c).set({ sid, chunk: c, rows: rowsToDb(chunks[c]) });
+    for (let c = 0; c < chunks.length; c++) await S.db.doc('items/' + sid + '-' + c).set({ rows: rowsToDb(chunks[c]) });
     for (let c = chunks.length; c < old; c++) await S.db.doc('items/' + sid + '-' + c).delete();
-    await S.db.doc('suppliers/' + sid).set({ name, file: I.file, date: I.date || '', chunks: chunks.length, count: rows.length, order: S.suppliers[sid]?.order ?? Object.keys(S.suppliers).length, ...(lastChange ? { lastChange } : {}),
+    await S.db.doc('suppliers/' + sid).set({ name, file: I.file, date: I.date ?? fileDate(), chunks: chunks.length, order: S.suppliers[sid]?.order ?? Object.keys(S.suppliers).length, ...(lastChange ? { lastChange } : {}),
       ...(I.cols ? { header: I.header, columns: I.cols.map((x, c) => ({ header: headText(I, c), use: x.use, label: x.label, c })).sort((a, b) => (I.cols[a.c].rank ?? 1000 + a.c) - (I.cols[b.c].rank ?? 1000 + b.c)).map(({ c, ...x }) => ({ ...x, col: c })) } : S.suppliers[sid]?.columns ? { header: S.suppliers[sid].header, columns: S.suppliers[sid].columns } : {}) });
     S.importState = null; S.pendingImport = { sid, chunks: chunks.length }; toast(`Imported ${rows.length.toLocaleString()} items from ${name}`);
     changed(); // the saved rows may already be here (local writes show at once), so check now rather than on the next change
   } catch (e) { console.error(e); toast(e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'The import stopped partway. Try again.'); render(); }
 }
+// a delete button asks for a second click within 4 seconds
+function arm(btn, text) {
+  if (btn.classList.contains('armed')) return true;
+  const was = btn.textContent; btn.classList.add('armed'); btn.textContent = text;
+  setTimeout(() => { btn.classList.remove('armed'); btn.textContent = was; }, 4000);
+  return false;
+}
 async function deleteSupplier(sid, btn) {
-  if (!btn.classList.contains('armed')) { btn.classList.add('armed'); btn.textContent = 'Click again to delete'; setTimeout(() => { btn.classList.remove('armed'); btn.textContent = 'Delete list'; }, 4000); return; }
+  if (!arm(btn, 'Click again to delete')) return;
   const s = S.suppliers[sid];
+  // the list's links, pack sizes, dismissed pairs and product edits go with it, unless another supplier's item still uses them
+  const left = new Set(D.offers.filter(o => o.sid !== sid).map(o => o.pid));
+  const dead = new Set(D.offers.filter(o => o.sid === sid && !left.has(o.pid)).map(o => o.pid));
+  const drop = (name, keys) => {
+    if (!keys.length) return;
+    keys.forEach(k => delete S[name][k]);
+    setDoc('matching/' + name, { map: Object.fromEntries(keys.map(k => [k, DEL()])) }, MERGE);
+  };
+  drop('links', Object.keys(S.links).filter(k => k.startsWith(sid + ':')));
+  drop('packs', Object.keys(S.packs).filter(k => k.startsWith(sid + ':')));
+  drop('dismissed', Object.keys(S.dismissed).filter(pk => pk.split('|').some(pid => dead.has(pid))));
+  for (const pid of dead) if (S.prodOv[pid]) delDoc('products/' + pid);
   for (let c = 0; c < (s.chunks || 0); c++) await delDoc('items/' + sid + '-' + c);
   await delDoc('suppliers/' + sid);
   toast(`Deleted ${s.name}'s list`);
@@ -1006,9 +1098,10 @@ async function exportPriceList(list, internal) {
   let aoa, widths, money;
   if (internal) {
     const F = D.fields, k = F.length;
-    aoa = [['Product', 'Details', 'Category', 'Unit', ...F.map(f => f.name), 'Suppliers', 'Best price', 'Best supplier', 'Buying from', 'Cost', 'Margin %', 'Sell price', 'Profit']];
-    sorted.forEach(p => aoa.push([p.name, p.detail, p.category, p.unit, ...F.map(f => p.extra[f.id] ?? ''), p.offers.map(o => `${o.sup}: ${o.price}`).join(' | '), p.best.price, p.best.sup, p.buy.sup, p.cost, +(p.margin * 100).toFixed(2), p.sell, +p.profit.toFixed(2)]));
-    widths = [50, 18, 22, 10, ...F.map(() => 12), 40, 11, 16, 16, 10, 9, 11, 10]; money = [5, 8, 10, 11].map(c => c + k);
+    const r4 = n => Math.round(n * 10000) / 10000;
+    aoa = [['Product', 'Details', 'Category', 'Unit', ...F.map(f => f.name), 'Suppliers (cheapest first)', 'Best price', 'Best supplier', 'Buying from', 'Listed price', 'Discount %', 'Pieces per pack', 'Cost', 'Margin %', 'Sell price', 'Profit']];
+    sorted.forEach(p => aoa.push([p.name, p.detail, p.category, p.unit, ...F.map(f => p.extra[f.id] ?? ''), [...p.offers].sort((a, b) => a.net - b.net).map(o => `${o.sup}: ${o.price}${o.net !== o.price ? ` (net ${r4(o.net)})` : ''}`).join(' | '), r4(p.best.net), p.best.sup, p.buy.sup, p.buy.price, +p.buy.disc, p.buy.pack, r4(p.cost), +(p.margin * 100).toFixed(2), p.sell, +p.profit.toFixed(2)]));
+    widths = [50, 18, 22, 10, ...F.map(() => 12), 40, 11, 16, 16, 11, 9, 9, 10, 9, 11, 10]; money = [5, 8, 11, 13, 14].map(c => c + k);
   } else {
     aoa = [];
     if (st.company) aoa.push([st.company]);
@@ -1031,6 +1124,9 @@ function renderSettings(v) {
       <div class="field"><label for="st-mode">How the margin is applied</label><select id="st-mode">
         <option value="markup" ${st.mode === 'markup' ? 'selected' : ''}>Added on cost: 100 at 20% sells for 120</option>
         <option value="margin" ${st.mode === 'margin' ? 'selected' : ''}>Share of sale price: 100 at 20% sells for 125</option></select></div>
+      <div class="field"><label for="st-piece">Compare suppliers on</label><select id="st-piece">
+        <option value="1" ${st.perPiece ? 'selected' : ''}>Price per piece after discount</option>
+        <option value="0" ${st.perPiece ? '' : 'selected'}>Price as listed</option></select></div>
       <div class="field"><label for="st-round">Round sell prices up to</label><select id="st-round">
         ${[[0, 'No rounding'], [0.05, '0.05'], [0.25, '0.25'], [0.5, '0.50'], [1, '1'], [5, '5']].map(([v, l]) => `<option value="${v}" ${st.round == v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="field"><label for="st-cur">Currency label</label><input id="st-cur" value="${esc(st.currency)}"></div>
@@ -1055,18 +1151,24 @@ function renderSettings(v) {
   $('#bk-get').onclick = downloadBackup;
   document.querySelectorAll('[data-fren]').forEach(inp => inp.onchange = () => { const n = inp.value.trim(); if (n) saveField(inp.dataset.fren, { name: n }); else render(); });
   document.querySelectorAll('[data-fdel]').forEach(btn => btn.onclick = () => {
-    if (!btn.classList.contains('armed')) { btn.classList.add('armed'); btn.textContent = 'Click again'; return; }
+    if (!arm(btn, 'Click again')) return;
     deleteField(btn.dataset.fdel); toast('Column removed');
   });
   $('#bk-put').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); };
   const save = (patch, dbPatch = patch) => { S.settings = { ...settings(), ...patch }; setDoc('settings/main', dbPatch, MERGE); changed(); };
-  $('#st-m').onchange = e => { const n = parseFloat(e.target.value); if (!isNaN(n)) save({ defaultMargin: n / 100 }); };
-  $('#st-mode').onchange = e => save({ mode: e.target.value });
+  $('#st-m').onchange = e => { const n = parseFloat(e.target.value); if (!isNaN(n) && marginOk(n)) save({ defaultMargin: n / 100 }); else render(); };
+  $('#st-mode').onchange = e => {
+    const all = [st.defaultMargin, ...Object.values(st.catMargins), ...Object.values(S.prodOv).map(o => o.margin).filter(m => m != null)];
+    if (e.target.value === 'margin' && all.some(m => m >= 1)) { toast('Some margins are 100% or more, which has no price when taken from the sale price. Lower them first.'); render(); return; }
+    save({ mode: e.target.value });
+  };
   $('#st-round').onchange = e => save({ round: +e.target.value });
+  $('#st-piece').onchange = e => save({ perPiece: e.target.value === '1' });
   $('#st-cur').onchange = e => save({ currency: e.target.value.trim() || 'ج.م' });
   $('#st-co').onchange = e => save({ company: e.target.value.trim() });
   document.querySelectorAll('[data-catm]').forEach(inp => inp.onchange = () => {
     const c = D.cats[+inp.dataset.catm], cm = { ...settings().catMargins }, n = parseFloat(inp.value);
+    if (!marginOk(n)) { render(); return; }
     if (isNaN(n)) delete cm[c]; else cm[c] = n / 100;
     save({ catMargins: cm }, { catMargins: { [c]: isNaN(n) ? DEL() : n / 100 } });
   });
@@ -1076,8 +1178,8 @@ function renderSettings(v) {
 function downloadBackup() {
   const docs = {};
   for (const sup of Object.values(S.suppliers)) { const { id, ...d } = sup; docs['suppliers/' + id] = d; }
-  for (const [id, rows] of Object.entries(S.chunks)) { const sid = S.suppliers[id.replace(/-\d+$/, '')] ? id.replace(/-\d+$/, '') : id; docs['items/' + id] = { sid, chunk: +id.split('-').pop(), rows }; }
-  docs['matching/links'] = { map: S.links }; docs['matching/dismissed'] = { map: S.dismissed };
+  for (const [id, rows] of Object.entries(S.chunks)) docs['items/' + id] = { rows };
+  docs['matching/links'] = { map: S.links }; docs['matching/dismissed'] = { map: S.dismissed }; docs['matching/packs'] = { map: S.packs };
   for (const [pid, ov] of Object.entries(S.prodOv)) docs['products/' + pid] = ov;
   if (S.settings) docs['settings/main'] = S.settings;
   for (const q of Object.values(S.quotes)) { const { id, ...d } = q; docs['quotes/' + id] = d; }
@@ -1097,7 +1199,7 @@ async function restoreBackup(file) {
     for (let i = 0; i < entries.length; i += 100) {
       const batch = S.db.batch();
       for (const [path, d] of entries.slice(i, i + 100)) {
-        if (path === 'matching/links' || path === 'matching/dismissed') {
+        if (path.startsWith('matching/')) {
           // keep matches people made here and add the backup's on top
           batch.set(S.db.doc(path), { map: d.map || {} }, MERGE);
         } else batch.set(S.db.doc(path), path.startsWith('items/') ? { ...d, rows: rowsToDb(rowsFromDb(d.rows)) } : d);
@@ -1125,14 +1227,21 @@ document.addEventListener('click', e => {
   else if (d.rmq) { S.quote.lines.splice(+d.rmq, 1); saveDraft(); render(); }
   else if (d.loadq) { const q = S.quotes[d.loadq]; S.quote = { id: q.id, customer: q.customer, date: q.date, notes: q.notes || '', lines: q.lines.map(l => ({ ...l, manual: l.manual ?? l.price != null })) }; saveDraft(); render(); }
   else if (d.delq) {
-    if (!t.classList.contains('armed')) { t.classList.add('armed'); t.textContent = 'Click again'; return; }
+    if (!arm(t, 'Click again')) return;
     delDoc('quotes/' + d.delq); if (S.quote.id === d.delq) S.quote.id = null; toast('Quote deleted');
   }
 });
 document.addEventListener('change', e => {
   const t = e.target, d = t.dataset;
   if (d.pid && t.classList.contains('buy')) { const ov = { ...(S.prodOv[d.pid] || {}) }; if (t.value) ov.chosen = t.value; else delete ov.chosen; S.prodOv[d.pid] = ov; saveOv(d.pid, ['chosen']); changed(); }
-  else if (d.pid && t.classList.contains('margin')) { const ov = { ...(S.prodOv[d.pid] || {}) }; const n = parseFloat(t.value); if (isNaN(n)) delete ov.margin; else ov.margin = n / 100; S.prodOv[d.pid] = ov; saveOv(d.pid, ['margin']); changed(); }
+  else if (d.pid && t.classList.contains('margin')) { const ov = { ...(S.prodOv[d.pid] || {}) }; const n = parseFloat(t.value); if (!marginOk(n)) { render(); return; } if (isNaN(n)) delete ov.margin; else ov.margin = n / 100; S.prodOv[d.pid] = ov; saveOv(d.pid, ['margin']); changed(); }
+  else if (d.pack != null || d.disc != null) {
+    const key = d.pack ?? d.disc, f = d.pack != null ? 'pack' : 'disc', n = parseFloat(t.value);
+    const set = { ...(S.packs[key] || {}) };
+    if (isNaN(n) || (f === 'pack' ? n < 1 : n < 0 || n >= 100)) delete set[f]; else set[f] = f === 'pack' ? Math.round(n) : n;
+    if (Object.keys(set).length) S.packs[key] = set; else delete S.packs[key];
+    savePack(key); changed(); openProduct(D.byPid[d.for] ? d.for : (D.offers.find(o => o.key === key)?.pid));
+  }
   else if (d.qty != null) { S.quote.lines[+d.qty].qty = Math.max(0, parseFloat(t.value) || 0); saveDraft(); render(); }
   else if (d.uprice != null) { const n = parseFloat(t.value); const l = S.quote.lines[+d.uprice]; l.price = isNaN(n) ? null : n; l.manual = !isNaN(n); saveDraft(); render(); }
 });

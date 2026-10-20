@@ -80,7 +80,8 @@
         onPage?.({ n: 1, total: 1, mode: 'scan', rows });
         return all;
       }
-      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+      // isEvalSupported off, so a crafted PDF cannot run code through its fonts (pdf.js 3.x security advisory)
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false }).promise;
       // a footer (date, page number) repeats at the same spot on every page; read a few pages to learn it
       const footers = await repeatedLines(pdf);
       const isFooter = r => footers.has(footKey(r.name, r.y));
@@ -91,7 +92,9 @@
         const pieces = TableReader.piecesFromPdf(await page.getTextContent(), base.height);
         let rows, mode = 'text';
         if (!forceOcr && !TableReader.looksBroken(pieces)) {
-          rows = TableReader.readPieces(pieces, state).rows.filter(r => !isNaN(r.price));
+          rows = TableReader.readPieces(pieces, state).rows;
+          // rows whose price can't be read stay in, so the review table can flag them; a page with no prices at all is scanned
+          if (!rows.some(r => !isNaN(r.price))) rows = null;
         }
         if (!rows || !rows.length) {
           mode = 'scan';

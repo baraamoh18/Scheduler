@@ -130,7 +130,9 @@
       const head = header(ls[i]);
       if (head) { state.layout = head; if (pendingCategory) state.category = pendingCategory; pendingCategory = ''; continue; }
       const nums = cs.filter(c => isNumber(c.str)).length;
-      if (!nums) {
+      // text under a price heading ("—", "on request") means an item whose price can't be read, not a wrapped name
+      const pricedText = state.layout && cs.some(c => state.layout.tables.some(t => t.price === columnOf(c, state.layout.cols)));
+      if (!nums && !pricedText) {
         const text = cs.map(c => c.str).join(' ');
         if (state.layout) for (const c of cs) { const col = columnOf(c, state.layout.cols); const t = state.layout.tables.find(t => t.name === col); if (t && hasLetters(c.str)) orphans.push({ y: ls[i].y, table: t, str: c.str }); }
         // only a lone heading directly above a table header counts as a section name
