@@ -162,12 +162,22 @@ function norm(s) {
     .replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ـ/g, '')
     .replace(/([؀-ۿ])\1{2,}/g, '$1').toLowerCase().replace(/[()\[\]{}"'،,]/g, ' ').replace(/\s+/g, ' ').trim();
 }
+// true when every word of the query appears somewhere in the text, in any order
+function matches(text, q) {
+  const t = norm(text);
+  return norm(q).split(' ').every(w => !w || t.includes(w) || (w.length > 3 && w.startsWith('ال') && t.includes(w.slice(2))));
+}
 const tokens = s => norm(s).split(/[\s*×xX\/\-+:]+/).filter(t => t && t !== 'م' && t !== 'سم');
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 
 // ---------- derived data ----------
 let D = { offers: [], products: [], byPid: {}, cats: [] };
 function supplierOrder() { return Object.values(S.suppliers).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name)); }
+// An item's identity within a supplier list: its name and details, plus a counter for exact repeats.
+function offerKey(name, detail, seen) {
+  const base = hash(norm(name) + '|' + norm(detail));
+  return base + '.' + (seen[base] = (seen[base] || 0) + 1);
+}
 function derive() {
   const st = settings();
   const offers = [];
@@ -177,12 +187,10 @@ function derive() {
       const ch = S.chunks[sup.id + '-' + c];
       if (!ch) continue;
       ch.forEach((r, i) => {
-        const [name, price, detail, source, category] = r;
-        const base = hash(norm(name) + '|' + norm(detail));
-        const n = (seen[base] = (seen[base] || 0) + 1);
-        const key = sup.id + ':' + base + '.' + n;
-        const own = 'o-' + sup.id + '-' + base + '-' + n;
-        offers.push({ key, sid: sup.id, sup: sup.name, name, price: +price, detail: detail || '', source: source || '', category: category || '', pid: S.links[key] || own });
+        const [name, price, detail, source, category, prev] = r;
+        const key = sup.id + ':' + offerKey(name, detail, seen);
+        const own = 'o-' + sup.id + '-' + key.slice(sup.id.length + 1).replace('.', '-');
+        offers.push({ key, sid: sup.id, sup: sup.name, name, price: +price, prev: +prev || 0, detail: detail || '', source: source || '', category: category || '', pid: S.links[key] || own });
       });
     }
   }
@@ -287,8 +295,9 @@ function changed() {
 function scheduleRender() { if (renderPending) return; renderPending = true; requestAnimationFrame(() => { renderPending = false; render(); }); }
 
 // Firestore can't hold arrays inside arrays, so each row is stored as {n, p, d, s, c}.
-const rowsToDb = rows => rows.map(([n, p, d, s, c]) => ({ n: n ?? '', p: +p, d: d ?? '', s: s ?? '', c: c ?? '' }));
-const rowsFromDb = rows => (rows || []).map(r => Array.isArray(r) ? r : [r.n, r.p, r.d, r.s, r.c]);
+// o (optional) is the item's price before the latest upload, when that upload changed it.
+const rowsToDb = rows => rows.map(([n, p, d, s, c, o]) => Object.assign({ n: n ?? '', p: +p, d: d ?? '', s: s ?? '', c: c ?? '' }, o > 0 ? { o: +o } : {}));
+const rowsFromDb = rows => (rows || []).map(r => Array.isArray(r) ? r : [r.n, r.p, r.d, r.s, r.c, r.o]);
 const configured = () => { const c = window.FIREBASE_CONFIG; return c && c.apiKey && !/PASTE/i.test(c.apiKey); };
 let unsubs = [];
 
@@ -365,12 +374,13 @@ function render() {
 }
 
 function filtered() {
-  const q = norm(S.q);
+  const q = S.q.trim();
   let list = D.products.filter(p => {
     if (S.filter === 'multi' && p.nSup < 2) return false;
+    if (S.filter === 'changed' && !p.offers.some(o => o.prev > 0 && o.prev !== o.price)) return false;
     if (S.filter.startsWith('sup:') && !p.offers.some(o => o.sid === S.filter.slice(4))) return false;
     if (S.cat && p.category !== S.cat) return false;
-    return !q || norm(p.name + ' ' + p.detail + ' ' + p.category).includes(q);
+    return !q || matches(p.name + ' ' + p.detail + ' ' + p.category, q);
   });
   const by = { name: (a, b) => a.name.localeCompare(b.name, 'ar'), best: (a, b) => a.best.price - b.best.price, bestd: (a, b) => b.best.price - a.best.price, offers: (a, b) => b.nSup - a.nSup || a.name.localeCompare(b.name, 'ar'), saving: (a, b) => (b.high.price - b.best.price) - (a.high.price - a.best.price) }[S.sort];
   return list.sort(by);
@@ -402,6 +412,7 @@ function renderProducts(v) {
     <select id="filter" aria-label="Show">
       <option value="all">All products</option>
       <option value="multi">Sold by 2+ suppliers</option>
+      <option value="changed">Price changed in last upload</option>
       ${sups.map(s => `<option value="sup:${esc(s.id)}">Only ${esc(s.name)}</option>`).join('')}
     </select>
     <select id="cat" aria-label="Category"><option value="">All categories</option>${D.cats.map(c => `<option>${esc(c)}</option>`).join('')}</select>
@@ -428,9 +439,14 @@ function renderProducts(v) {
   $('#exp-cust').onclick = () => exportPriceList(list, false);
   $('#exp-int').onclick = () => exportPriceList(list, true);
 }
+function trend(o) {
+  if (!(o.prev > 0) || o.prev === o.price) return '';
+  const up = o.price > o.prev, ch = Math.abs(o.price / o.prev - 1) * 100;
+  return ` <span title="was ${fmt(o.prev)} before the last upload" style="color:var(${up ? '--danger' : '--best'})">${up ? '▲' : '▼'}${ch < 9.95 ? +ch.toFixed(1) : Math.round(ch)}%</span>`;
+}
 function rowHtml(p) {
   const st = settings();
-  const prices = [...p.offers].sort((a, b) => a.price - b.price).map(o => `<span class="chip ${p.nSup > 1 && o === p.best ? 'best' : ''}">${esc(o.sup)} ${fmt(o.price)}</span>`).join('');
+  const prices = [...p.offers].sort((a, b) => a.price - b.price).map(o => `<span class="chip ${p.nSup > 1 && o === p.best ? 'best' : ''}">${esc(o.sup)} ${fmt(o.price)}${trend(o)}</span>`).join('');
   const supIds = [...new Set(p.offers.map(o => o.sid))];
   const buy = p.nSup > 1
     ? `<select class="buy" data-pid="${esc(p.pid)}" aria-label="Buy from"><option value="">Cheapest (${esc(p.best.sup)})</option>${supIds.map(id => `<option value="${esc(id)}" ${p.chosenSid === id ? 'selected' : ''}>${esc(S.suppliers[id]?.name || id)}</option>`).join('')}</select>`
@@ -485,7 +501,7 @@ function openProduct(pid) {
   const s = $('#pd-search');
   s.oninput = () => {
     const q = norm(s.value); const sids = new Set(p.offers.map(o => o.sid));
-    const res = q.length < 2 ? sugg : D.products.filter(x => x !== p && !x.offers.every(o => sids.has(o.sid)) && norm(x.name + ' ' + x.detail).includes(q)).slice(0, 12);
+    const res = q.length < 2 ? sugg : D.products.filter(x => x !== p && !x.offers.every(o => sids.has(o.sid)) && matches(x.name + ' ' + x.detail, q)).slice(0, 12);
     $('#pd-results').innerHTML = linkRows(res, p);
   };
 }
@@ -522,6 +538,7 @@ function renderSuppliers(v) {
     const shared = D.products.filter(p => p.nSup > 1 && p.offers.some(o => o.sid === s.id)).length;
     return `<div class="panel supplier"><div class="name">${esc(s.name)}</div>
       <div class="small muted">${esc(s.file || '')}${s.date ? ' · list date ' + esc(s.date) : ''}</div>
+      ${s.lastChange ? `<div class="small muted">${lastChangeText(s.lastChange)}</div>` : ''}
       <div class="stats"><div class="stat"><b>${items.length.toLocaleString()}</b><span>items</span></div><div class="stat"><b>${shared}</b><span>matched with others</span></div></div>
       <div class="row"><button class="btn small" data-update-sup="${esc(s.id)}">Upload new prices</button><button class="btn small danger" data-del-sup="${esc(s.id)}">Delete list</button></div></div>`;
   }).join('')}</div>
@@ -600,6 +617,7 @@ async function readVisual(file, forceOcr = false) {
 }
 let visualTimer = 0;
 function renderVisual() { cancelAnimationFrame(visualTimer); visualTimer = requestAnimationFrame(drawVisual); }
+const visualRows = V => V.rows.map(r => [r.name, r.price, r.detail, 'p' + r.page, r.category]);
 function drawVisual() {
   const I = S.importState, box = $('#im-map'); if (!box || !I?.visual) return;
   const V = I.visual, PER = 100;
@@ -617,10 +635,11 @@ function drawVisual() {
       ${shown.map((r, i) => { const k = V.view * PER + i; return `<tr><td class="muted">${r.page}</td><td><input class="ar" style="width:100%;min-width:220px" data-vrow="${k}" data-vf="name" value="${esc(r.name)}" aria-label="Item name"></td><td><input class="ar" style="width:130px" data-vrow="${k}" data-vf="detail" value="${esc(r.detail)}" aria-label="Details"></td><td class="num"><input type="number" step="0.01" style="width:100px;text-align:right${r.price > 0 ? '' : ';border-color:var(--danger)'}" data-vrow="${k}" data-vf="price" value="${isNaN(r.price) ? '' : r.price}" aria-label="Price"></td><td><button class="btn small" data-vdel="${k}">Remove</button></td></tr>`; }).join('')}
     </tbody></table>
     <div class="pager"><span class="muted small">Rows ${V.view * PER + 1}–${V.view * PER + shown.length} of ${V.rows.length.toLocaleString()}</span><button class="btn small" data-vpage="-1" ${V.view ? '' : 'disabled'}>Previous</button><button class="btn small" data-vpage="1" ${(V.view + 1) * PER < V.rows.length ? '' : 'disabled'}>Next</button></div></div>` : ''}
+    ${I.sid && V.done && V.rows.length && !bad ? reportHtml(priceReport(I.sid, visualRows(V))) : ''}
     <div class="row"><button class="btn primary" id="mp-go" ${V.done && V.rows.length && !bad ? '' : 'disabled'}>Import ${(V.rows.length - bad).toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button>${bad ? `<span class="chip warn">${bad} rows need a price</span>` : ''}
       ${V.done && /\.pdf$/i.test(I.file) && !V.forceOcr ? `<button class="btn" id="mp-ocr" title="Use this when the rows look wrong or empty">Rows look wrong? Scan the pages instead</button>` : ''}</div>`;
   $('#mp-cancel').onclick = () => { S.importAbort?.abort(); S.importState = null; render(); };
-  $('#mp-go').onclick = () => doImport(V.rows.map(r => [r.name, r.price, r.detail, 'p' + r.page, r.category]));
+  $('#mp-go').onclick = () => doImport(visualRows(V));
   const ocr = $('#mp-ocr'); if (ocr) ocr.onclick = () => readVisual(I.fileObj, true);
 }
 document.addEventListener('change', e => {
@@ -641,6 +660,50 @@ function parsedRows() {
   return body.map((r, i) => [String(r[m.name] ?? '').trim(), num(r[m.price]), m.detail >= 0 ? String(r[m.detail] ?? '').trim() : '', 'row ' + (i + (I.header ? 2 : 1)), m.category >= 0 ? String(r[m.category] ?? '').trim() : ''])
     .filter(r => r[0] && r[1] > 0);
 }
+// ---------- price-change report (uploading new prices for an existing supplier) ----------
+function priceReport(sid, rows) {
+  const old = new Map(D.offers.filter(o => o.sid === sid).map(o => [o.key, o]));
+  const seen = {}, up = [], down = [], keys = new Set();
+  let same = 0, added = 0;
+  for (const r of rows) {
+    const key = sid + ':' + offerKey(r[0], r[2], seen), o = old.get(key);
+    keys.add(key);
+    if (!o) added++;
+    else if (Math.abs(o.price - r[1]) < 0.005) same++;
+    else (r[1] > o.price ? up : down).push({ name: r[0], detail: r[2], old: o.price, now: r[1], ch: r[1] / o.price - 1 });
+  }
+  const removed = [...old.values()].filter(o => !keys.has(o.key)).map(o => ({ name: o.name, detail: o.detail, price: o.price, matched: (D.byPid[o.pid]?.nSup || 0) > 1 }));
+  const byCh = (a, b) => Math.abs(b.ch) - Math.abs(a.ch);
+  return { up: up.sort(byCh), down: down.sort(byCh), same, added, removed, lost: removed.filter(r => r.matched).length };
+}
+// rows tagged with their previous price, so product chips can show the change
+function withPrev(sid, rows) {
+  const old = new Map(D.offers.filter(o => o.sid === sid).map(o => [o.key, o.price])), seen = {};
+  return rows.map(r => { const was = old.get(sid + ':' + offerKey(r[0], r[2], seen)); return [...r.slice(0, 5), was > 0 && Math.abs(was - r[1]) >= 0.005 ? was : undefined]; });
+}
+function reportHtml(R) {
+  const n = x => x.toLocaleString();
+  const parts = [`<b style="color:var(--danger)">${n(R.up.length)} went up</b>`, `<b style="color:var(--best)">${n(R.down.length)} went down</b>`, `${n(R.same)} unchanged`, `${n(R.added)} new`, `${n(R.removed.length)} no longer listed`];
+  const changes = [...R.up, ...R.down].sort((a, b) => Math.abs(b.ch) - Math.abs(a.ch));
+  const pctTxt = ch => (ch > 0 ? '+' : '') + (ch * 100).toFixed(1) + '%';
+  return `<div class="panel" style="background:var(--surface-2)">
+    <h3>Compared with the current list</h3>
+    <p>${parts.join(' · ')}</p>
+    ${R.lost ? `<p class="note">${n(R.lost)} item${R.lost > 1 ? 's' : ''} no longer listed ${R.lost > 1 ? 'were' : 'was'} matched with another supplier, so ${R.lost > 1 ? 'those matches' : 'that match'} will be lost. If an item was only renamed, link it again from its product page after importing.</p>` : ''}
+    ${changes.length ? `<details><summary class="small">See the ${n(changes.length)} price changes, biggest first</summary>
+      <div class="tablebox" style="margin-top:8px"><table><thead><tr><th>Item</th><th class="num">Was</th><th class="num">Now</th><th class="num">Change</th></tr></thead><tbody>
+      ${changes.slice(0, 200).map(c => `<tr><td class="ar">${esc(c.name)}${c.detail ? ' · ' + esc(c.detail) : ''}</td><td class="num">${fmt(c.old)}</td><td class="num">${fmt(c.now)}</td><td class="num" style="color:var(${c.ch > 0 ? '--danger' : '--best'})">${pctTxt(c.ch)}</td></tr>`).join('')}
+      </tbody></table></div>${changes.length > 200 ? `<p class="small muted">Showing the 200 biggest changes.</p>` : ''}</details>` : ''}
+    ${R.removed.length ? `<details><summary class="small">See the ${n(R.removed.length)} items no longer listed</summary>
+      <div class="tablebox" style="margin-top:8px"><table><tbody>
+      ${R.removed.slice(0, 200).map(r => `<tr><td class="ar">${esc(r.name)}${r.detail ? ' · ' + esc(r.detail) : ''}</td><td class="num">${fmt(r.price)}</td><td>${r.matched ? '<span class="chip warn">match will be lost</span>' : ''}</td></tr>`).join('')}
+      </tbody></table></div></details>` : ''}
+  </div>`;
+}
+function lastChangeText(c) {
+  if (!c) return '';
+  return `Last upload ${esc(c.date)}: ${c.up} up, ${c.down} down, ${c.added} new, ${c.removed} no longer listed`;
+}
 function renderMapping() {
   const I = S.importState, box = $('#im-map'); if (!box) return;
   const head = I.rows[0];
@@ -654,6 +717,7 @@ function renderMapping() {
     </div>
     <label class="row small"><input type="checkbox" id="mp-head" ${I.header ? 'checked' : ''}> The first row is a header</label>
     <div class="tablebox"><table><thead><tr><th>Item</th><th>Details</th><th class="num">Price</th></tr></thead><tbody>${rows.slice(0, 6).map(r => `<tr><td class="ar">${esc(r[0])}</td><td class="ar">${esc(r[2])}</td><td class="num">${fmt(r[1])}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No rows with both a name and a price. Check the columns above.</td></tr>'}</tbody></table></div>
+    ${I.sid && rows.length ? reportHtml(priceReport(I.sid, rows)) : ''}
     <div class="row"><button class="btn primary" id="mp-go" ${rows.length ? '' : 'disabled'}>Import ${rows.length.toLocaleString()} items</button><button class="btn" id="mp-cancel">Cancel</button></div>`;
   for (const [id, f] of [['mp-name', 'name'], ['mp-price', 'price'], ['mp-detail', 'detail'], ['mp-cat', 'category']]) $('#' + id).onchange = e => { I.map[f] = +e.target.value; renderMapping(); };
   $('#mp-head').onchange = e => { I.header = e.target.checked; renderMapping(); };
@@ -667,13 +731,19 @@ async function doImport(rows) {
   if (!S.db) { toast('Sign in to save changes.'); return; }
   const sid = I.sid || (name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 's') + '-' + Date.now().toString(36).slice(-4);
   const old = S.suppliers[sid]?.chunks || 0;
+  let lastChange = null;
+  if (I.sid) {
+    const R = priceReport(sid, rows);
+    lastChange = { date: fileDate(), up: R.up.length, down: R.down.length, added: R.added, removed: R.removed.length };
+    rows = withPrev(sid, rows);
+  }
   const chunks = [];
   for (let i = 0; i < rows.length; i += 500) chunks.push(rows.slice(i, i + 500));
   $('#mp-go').disabled = true; $('#mp-go').textContent = 'Importing…';
   try {
     for (let c = 0; c < chunks.length; c++) await S.db.doc('items/' + sid + '-' + c).set({ sid, chunk: c, rows: rowsToDb(chunks[c]) });
     for (let c = chunks.length; c < old; c++) await S.db.doc('items/' + sid + '-' + c).delete();
-    await S.db.doc('suppliers/' + sid).set({ name, file: I.file, date: I.date || '', chunks: chunks.length, count: rows.length, order: S.suppliers[sid]?.order ?? Object.keys(S.suppliers).length });
+    await S.db.doc('suppliers/' + sid).set({ name, file: I.file, date: I.date || '', chunks: chunks.length, count: rows.length, order: S.suppliers[sid]?.order ?? Object.keys(S.suppliers).length, ...(lastChange ? { lastChange } : {}) });
     S.importState = null; S.pendingImport = { sid, chunks: chunks.length }; toast(`Imported ${rows.length.toLocaleString()} items from ${name}`);
     render();
   } catch (e) { console.error(e); toast(e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'The import stopped partway. Try again.'); render(); }
@@ -735,7 +805,7 @@ function renderQuote(v) {
   add.oninput = () => {
     const q = norm(add.value), box = $('#qt-results');
     if (q.length < 2) { box.hidden = true; return; }
-    const res = D.products.filter(p => norm(p.name + ' ' + p.detail).includes(q)).slice(0, 10);
+    const res = D.products.filter(p => matches(p.name + ' ' + p.detail, q)).slice(0, 10);
     box.hidden = false;
     box.querySelector('tbody').innerHTML = res.map(p => `<tr><td class="ar">${esc(p.name)}${p.detail ? ' · ' + esc(p.detail) : ''}</td><td class="num">${fmt(p.sell)}</td><td><button class="btn small primary" data-addq="${esc(p.pid)}">Add</button></td></tr>`).join('') || '<tr><td class="empty">No products found</td></tr>';
   };
