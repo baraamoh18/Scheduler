@@ -9,8 +9,8 @@
   const LETTER_SIZES = /^(x{0,3}s|m|x{0,4}l|\dx?l|صغير|وسط|كبير|small|medium|large)$/;
   const PACKS = new Set(['توب', 'علبه', 'علب', 'كرتونه', 'كرتون', 'باكو', 'باكت', 'دسته', 'رول', 'رولات', 'لفه', 'قطعه', 'حبه', 'شريط', 'كيس', 'box', 'pack', 'pcs', 'roll']);
   const STOP = new Set(['من', 'في', 'مع', 'و', 'عدد', 'نوع', 'لون', 'طول', 'عرض', 'مقاس', 'مقاسات']);
-  // detail columns that describe the price, not the item (discount, stock, codes)
-  const NOT_ITEM = /^(خصم|الخصم|نسبه|discount|رصيد|الرصيد|كميه|الكميه|qty|stock|سعر|السعر|price|بونص|bonus|كود|الكود|code|باركود|barcode|تاريخ|date)/i;
+  // detail columns that describe the price or pack, not the item (discount, pack, stock, codes)
+  const NOT_ITEM = /^(علبه|عبوه|العبوه|الوحده|وحده|كرتونه|pack|unit|carton|خصم|الخصم|نسبه|discount|رصيد|الرصيد|كميه|الكميه|qty|stock|سعر|السعر|price|بونص|bonus|كود|الكود|code|باركود|barcode|تاريخ|date)/i;
 
   function clean(s) {
     s = String(s || '').replace(/[٠-٩]/g, d => AR_DIG.indexOf(d)).replace(/[٫]/g, '.').replace(/٬/g, ',')

@@ -92,6 +92,13 @@ input.ar { direction: rtl; text-align: right; }
 .chip.lvl-medium { background: var(--accent-weak); color: var(--accent); }
 .chip.lvl-low { background: var(--warn-bg); color: var(--warn); }
 .warn-text { color: var(--warn); }
+.grid-cell { min-width: 150px; vertical-align: top; }
+.grid-cell .offer { padding: 3px 0; }
+.grid-cell .offer + .offer { border-top: 1px dashed var(--line); }
+.grid-cell .offer button { all: unset; cursor: pointer; display: block; unicode-bidi: plaintext; font-size: 13px; }
+.grid-cell .offer button:hover { color: var(--accent); text-decoration: underline; }
+.grid-cell .offer.cheapest b { color: var(--best); }
+th.size, td.size { position: sticky; left: 0; background: var(--surface-2); white-space: nowrap; font-weight: 600; }
 .match-notes { grid-column: 1 / -1; display: flex; gap: 6px 16px; flex-wrap: wrap; }
 td input.margin { width: 74px; text-align: right; }
 td select.buy { max-width: 170px; }
@@ -129,6 +136,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
     <nav class="tabs" role="tablist" id="tabs">
       <button role="tab" data-tab="products" aria-selected="true">Products</button>
       <button role="tab" data-tab="matching">Matching<span class="count" id="cnt-match">0</span></button>
+      <button role="tab" data-tab="compare">Compare</button>
       <button role="tab" data-tab="suppliers">Suppliers<span class="count" id="cnt-sup">0</span></button>
       <button role="tab" data-tab="quote">Customer quote<span class="count" id="cnt-quote">0</span></button>
       <button role="tab" data-tab="settings">Settings</button>
@@ -145,7 +153,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 const S = {
   db: null, ready: false, gated: false,
   suppliers: {}, chunks: {}, links: {}, dismissed: {}, prodOv: {}, settings: null, quotes: {},
-  tab: 'products', q: '', filter: 'all', mq: '', mlevel: 'likely', mshow: 80, cat: '', sort: 'name', page: 0,
+  tab: 'products', q: '', filter: 'all', mq: '', mlevel: 'likely', mshow: 80, cq: '', cmulti: false, cat: '', sort: 'name', page: 0,
   quote: loadDraft(), importState: null,
 };
 const DEFAULTS = { defaultMargin: 0.2, mode: 'markup', round: 0, currency: 'ج.م', company: '', catMargins: {} };
@@ -353,7 +361,7 @@ function render() {
   if (S.ready) $('#sub').textContent = `${D.products.length.toLocaleString()} products from ${Object.keys(S.suppliers).length} suppliers`;
   const v = $('#view');
   if (!S.ready) { v.innerHTML = `<div class="panel"><h2>Loading your price lists…</h2><p class="muted">Products, suppliers and quotes appear here once your saved data arrives.</p></div>`; return; }
-  ({ products: renderProducts, matching: renderMatching, suppliers: renderSuppliers, quote: renderQuote, settings: renderSettings })[S.tab](v);
+  ({ products: renderProducts, matching: renderMatching, compare: renderCompare, suppliers: renderSuppliers, quote: renderQuote, settings: renderSettings })[S.tab](v);
 }
 
 function filtered() {
@@ -529,6 +537,46 @@ function renderMatching(v) {
   const mq = $('#mq'); mq.oninput = () => { S.mq = mq.value; S.mshow = 80; clearTimeout(mq.t); mq.t = setTimeout(() => { render(); const n = $('#mq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 200); };
   $('#mlevel').onchange = e => { S.mlevel = e.target.value; S.mshow = 80; render(); };
   if ($('#mmore')) $('#mmore').onclick = () => { S.mshow += 80; render(); };
+}
+
+// ---------- compare (family grid) ----------
+// One kind of item laid out by size (rows) and supplier (columns), so gaps and the cheapest supplier show at a glance.
+function sizeLabel(o) {
+  const d = Matcher.describe(o.name, o.detail);
+  return [d.sizes.replace(/ /g, ' × '), d.letters.toUpperCase()].filter(Boolean).join(' ');
+}
+function renderCompare(v) {
+  const q = S.cq.trim(), sups = supplierOrder();
+  const offers = q.length < 2 ? [] : D.offers.filter(o => matches(o.name + ' ' + o.detail, q));
+  const rows = new Map();
+  for (const o of offers) { const k = sizeLabel(o); (rows.get(k) || rows.set(k, []).get(k)).push(o); }
+  let list = [...rows.entries()].map(([size, os]) => ({ size, os, sids: new Set(os.map(o => o.sid)) }));
+  if (S.cmulti) list = list.filter(r => r.sids.size > 1);
+  const num = s => parseFloat(s) || (s ? Infinity : -1);
+  list.sort((a, b) => num(a.size) - num(b.size) || a.size.localeCompare(b.size));
+  const cols = sups.filter(s => list.some(r => r.sids.has(s.id)));
+  const TOO_MANY = 400, shown = offers.length > TOO_MANY ? [] : list;
+  const cell = (r, sid) => {
+    const os = r.os.filter(o => o.sid === sid).sort((a, b) => a.price - b.price);
+    const min = Math.min(...r.os.filter(o => o.price > 0).map(o => o.price));
+    return `<td class="grid-cell">${os.map(o => `<div class="offer ${r.sids.size > 1 && o.price === min ? 'cheapest' : ''}">
+      <button class="ar" data-open="${esc(o.pid)}">${esc(o.name)}</button>
+      <b>${fmt(o.price)}</b>${trend(o)}${(D.byPid[o.pid]?.nSup || 0) > 1 ? ' <span class="chip">linked</span>' : ''}${r.sids.size > 1 && o.price === min ? ' <span class="chip best">cheapest</span>' : ''}</div>`).join('')}</td>`;
+  };
+  v.innerHTML = `<div class="panel"><h2>Compare one kind of item</h2>
+    <p class="muted">Search for an item, like شاش or رباط ضاغط. Sizes run down the side and suppliers across the top, so you can see who sells each size and who is cheapest. Prices are as each supplier lists them: a price several times higher usually means a box or pack, not one piece. Open an item to link it with the same product from another supplier.</p>
+    <div class="row">
+      <input class="grow" id="cq" type="search" placeholder="e.g. شاش" value="${esc(S.cq)}" aria-label="Item to compare">
+      <label class="row small"><input type="checkbox" id="cmulti" ${S.cmulti ? 'checked' : ''}> Only sizes sold by 2+ suppliers</label>
+    </div></div>
+    ${q.length < 2 ? '' : offers.length > TOO_MANY ? `<div class="panel empty">${offers.length.toLocaleString()} items contain this word. Add another word, a brand or a size, to narrow it down.</div>`
+      : !shown.length ? `<div class="panel empty">${S.cmulti && offers.length ? 'No size is sold by more than one supplier. Untick the box to see every item.' : 'No items contain this. Try a shorter word or another spelling.'}</div>`
+      : `<div class="tablebox" style="overflow-x:auto"><table>
+      <thead><tr><th class="size">Size</th>${cols.map(s => `<th>${esc(s.name)}</th>`).join('')}</tr></thead>
+      <tbody>${shown.map(r => `<tr><td class="size">${esc(r.size || 'No size in name')}</td>${cols.map(s => cell(r, s.id)).join('')}</tr>`).join('')}</tbody>
+    </table><div class="pager"><span class="muted small">${offers.length} items in ${shown.length} sizes from ${cols.length} suppliers</span></div></div>`}`;
+  const cq = $('#cq'); cq.oninput = () => { S.cq = cq.value; clearTimeout(cq.t); cq.t = setTimeout(() => { render(); const n = $('#cq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); };
+  $('#cmulti').onchange = e => { S.cmulti = e.target.checked; render(); };
 }
 
 // ---------- suppliers & import ----------
