@@ -113,7 +113,7 @@ test('backup: download everything, then load it into an empty database', async (
   expect(dl.suggestedFilename()).toMatch(/^Supply Price Desk backup \d{4}-\d{2}-\d{2}\.json$/);
   const backup = JSON.parse(require('fs').readFileSync(await dl.path(), 'utf8'));
   expect(backup.app).toBe('supply-price-desk');
-  expect(Object.keys(backup.docs).sort()).toEqual(['items/delta-0', 'items/nile-0', 'matching/dismissed', 'matching/links', 'products/o-nile-abc-1', 'quotes/q-1', 'settings/main', 'suppliers/delta', 'suppliers/nile']);
+  expect(Object.keys(backup.docs).sort()).toEqual(['items/delta-0', 'items/nile-0', 'matching/dismissed', 'matching/links', 'matching/packs', 'products/o-nile-abc-1', 'quotes/q-1', 'settings/main', 'suppliers/delta', 'suppliers/nile']);
   expect(backup.docs['items/nile-0'].rows[0]).toEqual(['شاش طبي 10 سم × 10 سم', 25, '', 'row 2', 'شاش', null, null]);
   const file = info.outputPath('backup.json');
   require('fs').writeFileSync(file, JSON.stringify(backup));

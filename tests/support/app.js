@@ -18,7 +18,6 @@ function itemsDocs(sid, rows) {
   const docs = {};
   for (let c = 0; c * 500 < rows.length; c++) {
     docs[`items/${sid}-${c}`] = {
-      sid, chunk: c,
       rows: rows.slice(c * 500, c * 500 + 500).map(([n, p, d, s, cat, o, x]) => Object.assign({ n, p, d: d || '', s: s || '', c: cat || '' }, o ? { o } : {}, x ? { x } : {})),
     };
   }
@@ -28,7 +27,7 @@ function itemsDocs(sid, rows) {
 function seed({ suppliers = [], links, dismissed, products = {}, settings, quotes = {} } = {}) {
   const docs = {};
   suppliers.forEach(({ id, name, rows, ...rest }, i) => {
-    docs['suppliers/' + id] = { name, file: id + '.xlsx', date: '2026-10-01', chunks: Math.ceil(rows.length / 500), count: rows.length, order: i, ...rest };
+    docs['suppliers/' + id] = { name, file: id + '.xlsx', date: '2026-10-01', chunks: Math.ceil(rows.length / 500), order: i, ...rest };
     Object.assign(docs, itemsDocs(id, rows));
   });
   if (links) docs['matching/links'] = { map: links };
@@ -58,7 +57,7 @@ const test = base.extend({
           return fs.existsSync(p) && p.startsWith(ROOT) ? route.fulfill(file(p)) : route.fulfill({ status: 404, body: '' });
         }
         if (url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com')) return route.fulfill({ status: 200, contentType: 'text/css', body: '' });
-        if (url.includes('/xlsx/0.18.5/xlsx.full.min.js')) return route.fulfill(file(path.join(NM, 'xlsx/dist/xlsx.full.min.js')));
+        if (url.includes('/xlsx-0.20.3/package/dist/xlsx.full.min.js')) return route.fulfill(file(path.join(NM, 'xlsx/dist/xlsx.full.min.js')));
         if (url.includes('/pdf.js/3.11.174/pdf.worker.min.js')) return route.fulfill(file(path.join(NM, 'pdfjs-dist/build/pdf.worker.min.js')));
         if (url.includes('/pdf.js/3.11.174/pdf.min.js')) return route.fulfill(file(path.join(NM, 'pdfjs-dist/build/pdf.min.js')));
         if (url.includes('tesseract.min.js')) return route.fulfill(file(path.join(__dirname, 'fake-tesseract.js')));
