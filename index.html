@@ -190,10 +190,21 @@ function norm(s) {
 }
 // true when every word of the query appears somewhere in the text, in any order
 // a number in the query matches whole numbers only, so 10 finds "10 سم" but not 100
+// The text is also read the matching way (Settings > Matching words), so "قفاز" finds "جوانتي", and a word
+// one or two letters off still counts ("دريسنج" finds "درسنج").
 function matches(text, q) {
-  const t = norm(text);
-  return norm(q).split(' ').every(w => !w || (/^\d+(\.\d+)?$/.test(w) ? new RegExp('(^|[^\\d.])' + w.replace('.', '\\.') + '(?![\\d]|\\.\\d)').test(t)
-    : t.includes(w) || (w.length > 3 && w.startsWith('ال') && t.includes(w.slice(2)))));
+  return hasWords(norm(text), norm(q), false) || (useWords(), hasWords(Matcher.searchKey(text), Matcher.searchKey(q), true));
+}
+function hasWords(t, q, near) {
+  let toks;
+  return q.split(' ').every(w => !w || (/^\d+(\.\d+)?$/.test(w) ? new RegExp('(^|[^\\d.])' + w.replace('.', '\\.') + '(?![\\d]|\\.\\d)').test(t)
+    : t.includes(w) || (w.length > 3 && w.startsWith('ال') && t.includes(w.slice(2)))
+      || (near && w.length >= 4 && (toks ||= t.split(' ')).some(x => Matcher.near(w, x)))));
+}
+// the word lists matching uses: Baraa's from Settings, or the starting lists
+function useWords() {
+  const w = settings().words || null;
+  if (useWords.w !== w) { useWords.w = w; Matcher.setWords(w || {}); }
 }
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 
@@ -286,12 +297,51 @@ function sellPrice(cost, m, st) {
 let suggestCache = null, suggestRaw = null, suggestSig = '';
 function suggestions() {
   if (suggestCache) return suggestCache;
-  const sig = Object.keys(S.dismissed).join(',') + '#' + D.products.map(p => p.pid + ':' + p.offers.map(o => o.key).join(',') + ':' + p.best.net).join('|');
+  useWords();
+  const sig = JSON.stringify(settings().words || '') + Object.keys(S.dismissed).join(',') + '#' + D.products.map(p => p.pid + ':' + p.offers.map(o => o.key).join(',') + ':' + p.best.net).join('|');
   if (sig !== suggestSig) {
     const items = D.products.map(p => ({ pid: p.pid, name: p.offers[0].name, detail: p.offers[0].detail, sids: new Set(p.offers.map(o => o.sid)), price: p.best.net }));
     suggestRaw = Matcher.suggest(items, { dismissed: S.dismissed }); suggestSig = sig;
   }
   return (suggestCache = suggestRaw.map(s => ({ ...s, a: D.byPid[s.a.pid], b: D.byPid[s.b.pid] })));
+}
+// After a pair whose names use different words is linked, offer to remember those words,
+// so the next price lists match by themselves.
+function openLearn(s) {
+  const dlg = $('#dlg'), pick = {};
+  const words = (side, list) => list.map(w => `<button class="btn small ar" data-lside="${side}" data-lword="${esc(w)}">${esc(w)}</button>`).join(' ');
+  dlg.innerHTML = `<div class="dlg">
+    <div class="dlg-head"><h3>Linked. Remember these words?</h3><button class="btn small" data-close>Not now</button></div>
+    <p class="muted">These two names use different words. If a word on one side means the same as a word on the other, pick both and save them, and items written either way will match from now on. If a word is a brand, pick it and mark it as a brand. You can change these lists in Settings, under Matching words.</p>
+    <div class="grid2"><div><div class="small muted ar">${esc(s.a.name)}</div><div class="row">${words('a', s.onlyA)}</div></div>
+      <div><div class="small muted ar">${esc(s.b.name)}</div><div class="row">${words('b', s.onlyB)}</div></div></div>
+    <div class="row"><button class="btn primary" id="lr-same" disabled>Save as the same word</button><button class="btn" id="lr-brand" disabled>Mark as a brand</button></div>
+  </div>`;
+  const sync = () => {
+    dlg.querySelectorAll('[data-lword]').forEach(b => b.classList.toggle('primary', pick[b.dataset.lside] === b.dataset.lword));
+    $('#lr-same').disabled = !(pick.a && pick.b);
+    $('#lr-brand').disabled = !!(pick.a && pick.b) || !(pick.a || pick.b);
+  };
+  dlg.querySelectorAll('[data-lword]').forEach(b => b.onclick = () => { const k = b.dataset.lside; pick[k] = pick[k] === b.dataset.lword ? null : b.dataset.lword; sync(); });
+  $('#lr-same').onclick = () => { addSameWords(pick.a, pick.b); dlg.close(); toast(`Saved: ${pick.a} = ${pick.b}`); };
+  $('#lr-brand').onclick = () => { const w = pick.a || pick.b; addLine('brands', w); dlg.close(); toast(`Saved ${w} as a brand`); };
+  dlg.querySelector('[data-close]').onclick = () => dlg.close();
+  if (!dlg.open) dlg.showModal();
+}
+const wordList = k => settings().words?.[k] ?? Matcher.DEFAULT_WORDS[k];
+function saveWords(patch) {
+  const words = { ...settings().words, ...patch };
+  S.settings = { ...settings(), words }; setDoc('settings/main', { words: patch }, MERGE); changed();
+}
+function addLine(k, line) { saveWords({ [k]: wordList(k).replace(/\s*$/, '') + '\n' + line }); }
+// adds "a = b", or adds the new word to the group that already has one of them
+function addSameWords(a, b) {
+  const lines = wordList('same').split('\n');
+  const i = lines.findIndex(l => l.split('=').some(x => [a, b].includes(Matcher.clean(x, true))));
+  if (i < 0) return addLine('same', a + ' = ' + b);
+  const has = lines[i].split('=').map(x => Matcher.clean(x, true));
+  [a, b].forEach(w => { if (!has.includes(w)) lines[i] += ' = ' + w; });
+  saveWords({ same: lines.join('\n') });
 }
 const likely = list => list.filter(s => s.level !== 'low');
 const LEVEL_TEXT = { high: 'Very likely', medium: 'Possible', low: 'Weak' };
@@ -584,8 +634,8 @@ function renderMatching(v) {
     <div class="small muted ar">${p.detail ? esc(p.detail) + ' · ' : ''}${esc(p.best.sup)} ${fmt(p.best.price)}</div>
     ${only.length ? `<div class="small ar">Only in this name: <b>${only.map(esc).join('، ')}</b></div>` : ''}</div>`;
   v.innerHTML = `<div class="panel"><h2>Possible matches</h2>
-    <p class="muted">Items from different suppliers whose names look alike. Names are compared after writing digits, sizes and spelling the same way (٥سم = 5 سم, ى = ي). Items with a different size are never suggested, and the discount or stock columns are ignored. Each pair says why it was suggested and what differs, so you decide. Nothing is linked until you press Same product.</p>
-    <div class="stats"><div class="stat"><b>${count('high')}</b><span>very likely: same words and size</span></div><div class="stat"><b>${count('medium')}</b><span>possible: one name has extra words, or the price or pack looks different</span></div><div class="stat"><b>${count('low')}</b><span>weak: same kind and size, different brand words</span></div></div>
+    <p class="muted">Items from different suppliers whose names look alike. Names are compared after writing digits, sizes and spelling the same way (٥سم = 5 سم, ى = ي). Same-meaning words, brands and words like اطفال / كبار come from Settings > Matching words. Items with a different size, weight or one of those words are never suggested, and the discount or stock columns are ignored. Each pair says why it was suggested and what differs, so you decide. Nothing is linked until you press Same product.</p>
+    <div class="stats"><div class="stat"><b>${count('high')}</b><span>very likely: same words and size</span></div><div class="stat"><b>${count('medium')}</b><span>possible: one name has extra words, or the price or pack looks different</span></div><div class="stat"><b>${count('low')}</b><span>weak: same kind and size, but a different brand or several things to check</span></div></div>
     <div class="row">
       <input class="grow" id="mq" type="search" placeholder="Check one kind of item, e.g. شاش" value="${esc(S.mq)}" aria-label="Search matches">
       <select id="mlevel" aria-label="Show" ${q ? 'disabled' : ''}><option value="likely">Very likely and possible</option><option value="high">Only very likely</option><option value="all">All, including weak</option></select>
@@ -594,7 +644,7 @@ function renderMatching(v) {
       ${side(s.a, s.onlyA)}
       <div class="score">${levelChip(s.level)}<div>${Math.round(s.score * 100)}% alike</div></div>
       ${side(s.b, s.onlyB)}
-      <div class="row"><button class="btn small primary" data-merge="${esc(s.b.pid)}" data-into="${esc(s.a.pid)}">Same product</button><button class="btn small" data-dismiss="${esc(s.pk)}">Different</button>${AI() ? AI().matchButton(s) : ''}</div>
+      <div class="row"><button class="btn small primary" data-merge="${esc(s.b.pid)}" data-into="${esc(s.a.pid)}" data-learn="${esc(s.pk)}">Same product</button><button class="btn small" data-dismiss="${esc(s.pk)}">Different</button>${AI() ? AI().matchButton(s) : ''}</div>
       ${s.notes.length ? `<div class="match-notes small">${s.notes.map(n => `<span class="${n.ok ? 'muted' : 'warn-text'}">${n.ok ? '✓' : '!'} ${esc(n.text)}</span>`).join('')}</div>` : ''}
       ${AI() ? AI().matchResult(s) : ''}
     </div>`).join('') : `<div class="empty">${q ? 'No items from different suppliers look alike for this search. Each supplier may call it differently: try a shorter word, or link items by hand from a product page.' : 'No likely matches between your suppliers right now. Choose "All, including weak" to see more, or search for one kind of item.'}</div>`}
@@ -608,8 +658,9 @@ function renderMatching(v) {
 // ---------- compare (family grid) ----------
 // One kind of item laid out by size (rows) and supplier (columns), so gaps and the cheapest supplier show at a glance.
 function sizeLabel(o) {
+  useWords();
   const d = Matcher.describe(o.name, o.detail);
-  return [d.sizes.replace(/ /g, ' × '), d.letters.toUpperCase()].filter(Boolean).join(' ');
+  return [d.sizes.replace(/ /g, ' × '), d.specs.replace(/(\d)g\b/g, '$1 جم').replace(/ (?=\d)/g, ' · '), d.letters.toUpperCase()].filter(Boolean).join(' ');
 }
 function renderCompare(v) {
   const q = S.cq.trim(), sups = supplierOrder();
@@ -1154,6 +1205,18 @@ function renderSettings(v) {
     <div class="tablebox"><table><thead><tr><th>Name</th><th class="num">Products with a value</th><th></th></tr></thead><tbody>${userFields().map(f => `<tr><td><input class="ar" data-fren="${esc(f.id)}" value="${esc(f.name)}" aria-label="Column name"></td><td class="num">${D.products.filter(p => p.extra[f.id] != null).length.toLocaleString()}</td><td><button class="btn small danger" data-fdel="${esc(f.id)}">Remove</button></td></tr>`).join('')}</tbody></table></div>`
       : '<p class="muted">None yet. When you upload a list, choose <b>+ New column</b> for any column you want to keep under its own name.</p>'}
   </div>
+  <div class="panel"><h2>Matching words</h2>
+    <p class="muted">How matching and search read item names. One group per line. Edit, then press Save; the suggestions on the Matching tab update right away.</p>
+    <div class="grid2">
+      <div class="field"><label for="mw-same">Same meaning, joined with =</label><textarea id="mw-same" class="ar" rows="10" placeholder="دريسنج = درسنج = غيار جراحي">${esc(wordList('same'))}</textarea>
+        <span class="small muted">For example a spelling, a synonym or an English name. Items written either way match.</span></div>
+      <div class="field"><label for="mw-brands">Brands, one per line</label><textarea id="mw-brands" class="ar" rows="10">${esc(wordList('brands'))}</textarea>
+        <span class="small muted">Two items of different brands are only shown as weak, marked "Different brand". A brand written two ways goes on one line with =.</span></div>
+      <div class="field"><label for="mw-opp">Words that tell items apart, joined with /</label><textarea id="mw-opp" class="ar" rows="7">${esc(wordList('opposites'))}</textarea>
+        <span class="small muted">Two names with different words from the same line are never suggested, for example اطفال / كبار.</span></div>
+    </div>
+    <div class="row"><button class="btn primary" id="mw-save">Save</button><button class="btn" id="mw-reset">Back to the starting lists</button></div>
+  </div>
   <div class="panel"><h2>Backup</h2>
     <p class="muted">Download everything (supplier lists, matches, product edits, settings and saved quotes) as one file, or load a backup file. Loading adds the backup's data and replaces anything with the same name; nothing else is deleted.</p>
     <div class="row"><button class="btn" id="bk-get">Download backup</button>
@@ -1161,6 +1224,11 @@ function renderSettings(v) {
       <span class="muted small" id="bk-status"></span></div>
   </div>`;
   $('#bk-get').onclick = downloadBackup;
+  $('#mw-save').onclick = () => { saveWords({ same: $('#mw-same').value.trim(), brands: $('#mw-brands').value.trim(), opposites: $('#mw-opp').value.trim() }); toast('Matching words saved'); };
+  $('#mw-reset').onclick = e => {
+    if (!arm(e.target, 'Click again')) return;
+    S.settings = { ...settings(), words: null }; setDoc('settings/main', { words: DEL() }, MERGE); changed(); toast('Back to the starting lists');
+  };
   document.querySelectorAll('[data-fren]').forEach(inp => inp.onchange = () => { const n = inp.value.trim(); if (n) saveField(inp.dataset.fren, { name: n }); else render(); });
   document.querySelectorAll('[data-fdel]').forEach(btn => btn.onclick = () => {
     if (!arm(btn, 'Click again')) return;
@@ -1233,7 +1301,10 @@ document.addEventListener('click', e => {
   if (d.go) { S.tab = d.go; render(); }
   else if (d.open) openProduct(d.open);
   else if (d.addq) addToQuote(d.addq);
-  else if (d.merge) { merge(d.merge, d.into); const dlg = $('#dlg'); if (dlg.open) { dlg.close(); openProduct(d.into); } }
+  else if (d.merge) {
+    const s = d.learn && suggestions().find(x => x.pk === d.learn);
+    merge(d.merge, d.into);
+    if (s && s.onlyA.length && s.onlyB.length) return openLearn(s); const dlg = $('#dlg'); if (dlg.open) { dlg.close(); openProduct(d.into); } }
   else if (d.split) { split(d.split); $('#dlg').close(); }
   else if (d.dismiss) { S.dismissed[d.dismiss] = true; saveDismissed(d.dismiss); changed(); }
   else if (d.delSup) deleteSupplier(d.delSup, t);
