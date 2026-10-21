@@ -119,7 +119,7 @@ test('compare: letter sizes, no-size rows, no results and too many results', asy
   await app.ready(page);
   await app.tab(page, 'compare');
   await page.locator('#cq').fill('جاون');
-  await expect(page.locator('#view tbody td.size')).toHaveText(['35 XL']); // the grams detail counts as a size
+  await expect(page.locator('#view tbody td.size')).toHaveText(['35 جم XL']); // the grams detail is shown with the size
   await page.locator('#cq').fill('قطن');
   await expect(page.locator('#view tbody td.size')).toHaveText(['No size in name']);
   await page.locator('#cq').fill('كمامة');
@@ -130,5 +130,5 @@ test('compare: letter sizes, no-size rows, no results and too many results', asy
   await page.locator('#cq').fill('غير موجود');
   await expect(page.locator('#view .panel.empty')).toContainText('No items contain this.');
   await page.locator('#cq').fill('جوانتي');
-  await expect(page.locator('#view .panel.empty')).toContainText('401 items contain this word.');
+  await expect(page.locator('#view .panel.empty')).toContainText('402 items contain this word.'); // قفاز جراحي counts too: it means the same as جوانتي
 });

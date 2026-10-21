@@ -19,7 +19,8 @@ test('writes digits, sizes and spellings the same way', () => {
 });
 
 test('describe splits words, sizes, letter sizes and packs', () => {
-  assert.deepEqual(describe('شاش طبي 10 سم × 10 سم', ''), { words: ['شاش', 'طبي'], sizes: '10 10', letters: '', packs: '' });
+  const d = describe('شاش طبي 10 سم × 10 سم', '');
+  assert.deepEqual([d.words, d.sizes, d.letters, d.packs], [['شاش', 'طبي'], '10 10', '', '']);
   assert.deepEqual(describe('جاون عزل XL', '').letters, 'xl');
   assert.equal(describe('بلاستر علبة 10', '').packs, 'علبه');
   // "the" prefix dropped from longer words
@@ -27,7 +28,7 @@ test('describe splits words, sizes, letter sizes and packs', () => {
 });
 
 test('discount, stock and price details are ignored, other details count', () => {
-  assert.deepEqual(describe('قفاز جراحي 7', 'خصم: 28 · رصيد: 40').words, ['قفاز', 'جراحي']);
+  assert.deepEqual(describe('شاش جراحي 7', 'خصم: 28 · رصيد: 40').words, ['شاش', 'جراحي']);
   assert.equal(describe('قفاز جراحي 7', 'خصم: 28').sizes, '7');
   assert.deepEqual(describe('جاون', 'لون: ازرق').words, ['جاون', 'ازرق']);
 });
@@ -79,4 +80,62 @@ test('dismissed pairs stay hidden', () => {
 test('one product never floods the list (at most 3 candidates each)', () => {
   const list = [item('a', 'سرنجة 5 مل', 'n', 2.5), ...[1, 2, 3, 4, 5].map(i => item('b' + i, 'سرنجه 5مل', 's' + i, 2.5))];
   assert.ok(suggest(list).filter(s => s.a.pid === 'a' || s.b.pid === 'a').length <= 3);
+});
+
+test('same-meaning words, colours and "ال" are read as one word', () => {
+  assert.equal(clean('كانيولا ١٨خضراء'), 'كانيولا 18 اخضر');
+  assert.equal(clean('قفاز'), 'جوانتي');
+  assert.equal(clean('غيار جراحي لاصق'), 'دريسنج لاصق');
+  assert.equal(clean('الاطفال'), 'اطفال');
+  assert.deepEqual(pairs([item('a', 'كانيولا ١٨خضراء', 'n', 6), item('b', 'كانيولا اخضر 18', 'd', 6)]), ['a+b:high']);
+  assert.deepEqual(pairs([item('a', 'فولي 12', 'n', 24), item('b', 'قسطرة فولى 12', 'd', 25)]), ['a+b:high']);
+  // a brand named on one side only is shown as an extra word
+  const [s] = suggest([item('a', 'كانيولا الترا ١٨خضراء', 'n', 6), item('b', 'كانيولا اخضر 18', 'd', 6)]);
+  assert.equal(s.level, 'medium');
+  assert.deepEqual(s.onlyA, ['الترا']);
+});
+
+test('words that tell items apart block a pair; on one side only they are flagged', () => {
+  assert.deepEqual(pairs([item('a', 'سرنجات دولية 3 سم اطفال', 'n', 3), item('b', 'سرنجات دولية 3 سم سيدات', 'd', 3)]), []);
+  assert.deepEqual(pairs([item('a', 'شراب دوالي فوق الركبة L', 'n', 3), item('b', 'شراب دوالى تحت الركبه L', 'd', 3)]), []);
+  assert.deepEqual(pairs([item('a', 'دريسنج لاصق 10*10', 'n', 3), item('b', 'دريسنج غير لاصق 10*10', 'd', 3)]), []);
+  assert.deepEqual(pairs([item('a', 'كانيولا 22 ازرق', 'n', 3), item('b', 'كانيولا 22 اصفر', 'd', 3)]), []);
+  const [s] = suggest([item('a', 'كيس جمع بول', 'n', 5), item('b', 'كيس جمع بول اطفال', 'd', 5)]);
+  assert.equal(s.level, 'medium');
+  assert.ok(s.notes.some(n => n.text === 'Only one name says اطفال'));
+});
+
+test('a different brand is weak and says so; the same brand is noted', () => {
+  const [s] = suggest([item('a', 'حزام ظهر عادي ميراج L', 'n', 90), item('b', 'موف حزام ظهر عادى L', 'd', 95)]);
+  assert.equal(s.level, 'low');
+  assert.equal(s.notes[0].text, 'Different brand: ميراج / موف');
+  const [m] = suggest([item('a', 'Mانكل مفتوح ميراج', 'n', 29), item('b', 'ميراج انكل مفتوح M', 'd', 31)]);
+  assert.equal(m.level, 'high');
+  assert.ok(m.notes.some(n => n.ok && n.text === 'Same brand ميراج'));
+  // a brand written as two words is shown the way the list writes it
+  const [k] = suggest([item('a', 'شراب دوالي ميدي كير L', 'n', 75), item('b', 'شراب دوالي ميراج L', 'd', 75)]);
+  assert.equal(k.notes[0].text, 'Different brand: ميدي كير / ميراج');
+});
+
+test('grams and percentages are kept apart from sizes, and codes are not sizes', () => {
+  const d = describe('جاون مريض 140*110 22 جرام', '');
+  assert.equal(d.sizes, '110 140');
+  assert.equal(d.specs, '22g');
+  assert.equal(describe('كحول اسبراي 70%', '').specs, '70%');
+  assert.equal(describe('صندل جبس كود ٢١٠', '').sizes, '');
+  assert.deepEqual(pairs([item('a', 'جاون مريض 140*110 22 جرام', 'n', 9), item('b', 'جاون مريض 140*110 35 جرام', 'd', 13)]), []);
+});
+
+test('the word lists can be changed, and the change is used right away', () => {
+  try {
+    const sugar = () => suggest([item('a', 'جهاز سكر اونكول', 'n', 300), item('b', 'جهاز سكر ساندا', 'd', 300)])[0];
+    assert.ok(!sugar().notes.some(n => /Different brand/.test(n.text)));
+    globalThis.Matcher.setWords({ brands: 'اونكول = اون كول\nساندا' });
+    assert.equal(sugar().level, 'low');
+    assert.equal(sugar().notes[0].text, 'Different brand: اونكول / ساندا');
+    globalThis.Matcher.setWords({ same: 'دعامه = ستنت' });
+    assert.deepEqual(pairs([item('a', 'دعامة 12', 'n', 24), item('b', 'ستنت 12', 'd', 25)]), ['a+b:high']);
+    globalThis.Matcher.setWords({ opposites: '' });
+    assert.deepEqual(describe('كيس بول اطفال', '').opp, {});
+  } finally { globalThis.Matcher.setWords(); }
 });
