@@ -33,3 +33,9 @@ Everything here is on free plans. It takes about 20 minutes, once.
 ## Checking the site (tests)
 
 The `tests` folder checks every tab and upload type in a browser, using small made-up price lists and a stand-in for Firebase, so it never touches your real data. GitHub runs it on every pull request. To run it on your computer, install Node.js, then in this folder run `npm install`, `npx playwright install chromium` and `npm test`.
+
+## The claude.ai copy (with Claude's help)
+
+The same app also runs as a page on claude.ai, where Claude can explain products, check matches, sum up a comparison, answer questions about your price lists and read scanned price lists. It keeps its own data in claude.ai, separate from Firebase: to move data across, download a backup on one and load it on the other under **Settings > Backup**.
+
+To rebuild it after changing the site, run `node scripts/build-claude-page.js` and publish `dist/supply-price-desk.html` to the same claude.ai artifact with the `db`, `sample` (with images) and `downloads` capabilities. The website does not use `claude-host.js` or `claude-ai.js`.

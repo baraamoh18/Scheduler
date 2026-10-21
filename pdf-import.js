@@ -71,11 +71,13 @@
   }
 
   // onPage({n, total, mode, rows}) is called as each page finishes.
-  async function readFile(file, { onPage, forceOcr = false, signal } = {}) {
+  // readScan(canvas) -> rows, when given, reads scanned pages and photos instead of the OCR here.
+  async function readFile(file, { onPage, forceOcr = false, signal, readScan } = {}) {
     const all = [], state = {};
+    const scan = readScan || (c => ocrCanvas(c, state));
     try {
       if (file.type.startsWith('image/')) {
-        const rows = await ocrCanvas(await imageCanvas(file), state);
+        const rows = await scan(await imageCanvas(file));
         rows.forEach(r => all.push({ ...r, page: 1 }));
         onPage?.({ n: 1, total: 1, mode: 'scan', rows });
         return all;
@@ -101,7 +103,7 @@
           const vp = page.getViewport({ scale: 2400 / base.width });
           const c = canvasFor(Math.round(vp.width), Math.round(vp.height));
           await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
-          rows = await ocrCanvas(c, state);
+          rows = await scan(c);
         }
         rows = rows.filter(r => !isFooter(r));
         rows.forEach(r => all.push({ ...r, page: n }));
