@@ -174,7 +174,7 @@
   function looksBroken(pieces) {
     const text = pieces.map(p => p.str).join('');
     if (!text.length) return true;
-    const bad = (text.match(/[\u0000-\u0008\u000b-\u001f԰-֏�]/g) || []).length;
+    const bad = (text.match(/[\u0000-\u0008\u000b-\u001f԰-֏\uFFFD]/g) || []).length;
     return bad / text.length > 0.01;
   }
 
