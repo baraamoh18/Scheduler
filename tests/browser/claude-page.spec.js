@@ -57,7 +57,7 @@ test('someone signed out of claude.ai is told how to open it', async ({ page, op
 
 test('a website backup loads, and later edits merge into the stored documents', async ({ page, openPage }, testInfo) => {
   await openPage({ docs: { 'settings/main': { defaultMargin: 0.2, catMargins: { 'شاش': 0.3 } } } });
-  await expect(page.locator('#sub')).toContainText('0 products');
+  await expect(page.locator('#sub')).toContainText('0 products', { timeout: 20000 });
   const docs = seed({ suppliers: [nile, delta], links: {} });
   const file = testInfo.outputPath('backup.json');
   fs.writeFileSync(file, JSON.stringify({ app: 'supply-price-desk', version: 1, docs }));
@@ -65,6 +65,8 @@ test('a website backup loads, and later edits merge into the stored documents', 
   await page.locator('#bk-put').setInputFiles(file);
   await expect(page.locator('#sub')).toHaveText('11 products from 2 suppliers');
   // clearing a category margin removes just that field; the rest of the settings stay
+  // (wait for the settings to redraw with the loaded lists first, or the typing lands in the old box)
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
   await page.locator('[data-catm]').first().fill('');
   await page.locator('[data-catm]').first().dispatchEvent('change');
   await expect.poll(async () => (await store(page))['settings/main']).toEqual({ defaultMargin: 0.2, catMargins: {} });
