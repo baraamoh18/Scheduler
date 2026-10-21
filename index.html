@@ -136,6 +136,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
       <button role="tab" data-tab="products" aria-selected="true">Products</button>
       <button role="tab" data-tab="matching">Matching<span class="count" id="cnt-match">0</span></button>
       <button role="tab" data-tab="compare">Compare</button>
+      <button role="tab" data-tab="ask" id="tab-ask" hidden>Ask Claude</button>
       <button role="tab" data-tab="suppliers">Suppliers<span class="count" id="cnt-sup">0</span></button>
       <button role="tab" data-tab="quote">Customer quote<span class="count" id="cnt-quote">0</span></button>
       <button role="tab" data-tab="settings">Settings</button>
@@ -149,6 +150,8 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 <script>
 'use strict';
 // ---------- state ----------
+// window.SPD_AI (claude-ai.js) adds Claude's help on the claude.ai copy of this page; the website runs without it.
+const AI = () => window.SPD_AI || null;
 const S = {
   db: null, ready: false, gated: false,
   suppliers: {}, chunks: {}, links: {}, dismissed: {}, packs: {}, prodOv: {}, settings: null, quotes: {},
@@ -299,7 +302,7 @@ const queues = {};
 function write(path, fn) {
   const run = (queues[path] || Promise.resolve()).then(fn).catch(e => {
     console.error(e);
-    toast(e && e.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow, or delete an old supplier list.' : 'Could not save that change. Check your connection and try again.');
+    toast(e?.friendly || (e && e.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow, or delete an old supplier list.' : 'Could not save that change. Check your connection and try again.'));
   });
   queues[path] = run; return run;
 }
@@ -399,6 +402,8 @@ function listen(db) {
 // ---------- render ----------
 function render() {
   if (S.gated) return;
+  $('#tab-ask').hidden = !AI();
+  if (S.tab === 'ask' && !AI()) S.tab = 'products';
   document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === S.tab));
   $('#cnt-sup').textContent = Object.keys(S.suppliers).length;
   $('#cnt-quote').textContent = S.quote.lines.length;
@@ -406,7 +411,7 @@ function render() {
   if (S.ready) $('#sub').textContent = `${D.products.length.toLocaleString()} products from ${Object.keys(S.suppliers).length} suppliers`;
   const v = $('#view');
   if (!S.ready) { v.innerHTML = `<div class="panel"><h2>Loading your price lists…</h2><p class="muted">Products, suppliers and quotes appear here once your saved data arrives.</p></div>`; return; }
-  ({ products: renderProducts, matching: renderMatching, compare: renderCompare, suppliers: renderSuppliers, quote: renderQuote, settings: renderSettings })[S.tab](v);
+  ({ products: renderProducts, matching: renderMatching, compare: renderCompare, suppliers: renderSuppliers, quote: renderQuote, settings: renderSettings, ask: v2 => AI().renderAsk(v2) })[S.tab](v);
 }
 
 function filtered() {
@@ -534,6 +539,7 @@ function openProduct(pid) {
         <td class="num">${fmt(o.net)}</td><td class="small muted">${esc(o.source)}</td><td>${p.offers.length > 1 ? `<button class="btn small" data-split="${esc(o.key)}">Not the same</button>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>
     <p class="small muted">${st.perPiece ? 'Suppliers are compared on the net price of one piece: the listed price, less the discount, divided by the pieces per pack. Leave a box empty to use what the price list says.' : 'Suppliers are compared on their listed prices (Settings). Discounts and pack sizes are kept for when you switch to price per piece.'}</p>
+    ${AI() ? AI().productBox(p) : ''}
     <p class="small muted">Selling at ${fmt(p.sell)} ${esc(st.currency)} with a ${pct(p.margin)}% ${st.mode === 'margin' ? 'margin' : 'markup'} on a cost of ${fmt(p.cost)} from ${esc(p.buy.sup)}.</p>
     <h3>Link the same product from another supplier</h3>
     <input id="pd-search" type="search" placeholder="Search other suppliers' items" aria-label="Search items to link">
@@ -588,8 +594,9 @@ function renderMatching(v) {
       ${side(s.a, s.onlyA)}
       <div class="score">${levelChip(s.level)}<div>${Math.round(s.score * 100)}% alike</div></div>
       ${side(s.b, s.onlyB)}
-      <div class="row"><button class="btn small primary" data-merge="${esc(s.b.pid)}" data-into="${esc(s.a.pid)}">Same product</button><button class="btn small" data-dismiss="${esc(s.pk)}">Different</button></div>
+      <div class="row"><button class="btn small primary" data-merge="${esc(s.b.pid)}" data-into="${esc(s.a.pid)}">Same product</button><button class="btn small" data-dismiss="${esc(s.pk)}">Different</button>${AI() ? AI().matchButton(s) : ''}</div>
       ${s.notes.length ? `<div class="match-notes small">${s.notes.map(n => `<span class="${n.ok ? 'muted' : 'warn-text'}">${n.ok ? '✓' : '!'} ${esc(n.text)}</span>`).join('')}</div>` : ''}
+      ${AI() ? AI().matchResult(s) : ''}
     </div>`).join('') : `<div class="empty">${q ? 'No items from different suppliers look alike for this search. Each supplier may call it differently: try a shorter word, or link items by hand from a product page.' : 'No likely matches between your suppliers right now. Choose "All, including weak" to see more, or search for one kind of item.'}</div>`}
     ${list.length > shown.length ? `<div class="pager"><span class="muted small">${shown.length} of ${list.length} shown</span><button class="btn small" id="mmore">Show more</button></div>` : ''}</div>`;
   $('#mlevel').value = S.mlevel;
@@ -630,7 +637,7 @@ function renderCompare(v) {
     </div></div>
     ${q.length < 2 ? '' : offers.length > TOO_MANY ? `<div class="panel empty">${offers.length.toLocaleString()} items contain this word. Add another word, a brand or a size, to narrow it down.</div>`
       : !shown.length ? `<div class="panel empty">${S.cmulti && offers.length ? 'No size is sold by more than one supplier. Untick the box to see every item.' : 'No items contain this. Try a shorter word or another spelling.'}</div>`
-      : `<div class="tablebox" style="overflow-x:auto"><table>
+      : `${AI() ? AI().compareBox(q, shown, cols) : ''}<div class="tablebox" style="overflow-x:auto"><table>
       <thead><tr><th class="size">Size</th>${cols.map(s => `<th>${esc(s.name)}</th>`).join('')}</tr></thead>
       <tbody>${shown.map(r => `<tr><td class="size">${esc(r.size || 'No size in name')}</td>${cols.map(s => cell(r, s.id)).join('')}</tr>`).join('')}</tbody>
     </table><div class="pager"><span class="muted small">${offers.length} items in ${shown.length} sizes from ${cols.length} suppliers</span></div></div>`}`;
@@ -653,7 +660,7 @@ function renderSuppliers(v) {
   }).join('')}</div>
   <div class="panel" id="import">
     <h2>${I?.sid ? 'Upload new prices for ' + esc(S.suppliers[I.sid]?.name) : 'Add a supplier price list'}</h2>
-    <p class="muted">Upload an Excel, CSV or PDF file, or a photo of a price list. PDFs and photos are read on this device page by page, and you check the rows before they are added. Matches you already confirmed stay in place for items whose name doesn't change.</p>
+    <p class="muted">Upload an Excel, CSV or PDF file, or a photo of a price list. PDFs and photos are read ${AI() ? 'page by page, scanned pages by Claude' : 'on this device page by page'}, and you check the rows before they are added. Matches you already confirmed stay in place for items whose name doesn't change.</p>
     <div class="grid2">
       <div class="field"><label for="im-file">Price list file</label><input id="im-file" type="file" accept=".xlsx,.xls,.csv,.pdf,image/jpeg,image/png,image/webp"></div>
       <div class="field"><label for="im-name">Supplier name</label><input id="im-name" value="${esc(I?.supName || '')}" placeholder="e.g. Nile Medical" ${I?.sid ? 'disabled' : ''}></div>
@@ -717,8 +724,9 @@ const loadScript = src => loadScript[src] ||= new Promise((ok, fail) => {
   document.head.appendChild(el);
 });
 async function libsReady() {
-  try { await Promise.all(PDF_LIBS.map(loadScript)); } catch (e) { console.error(e); }
-  if (typeof pdfjsLib === 'undefined' || typeof Tesseract === 'undefined') { toast('The PDF reader did not load. Check your connection and try again.'); return false; }
+  // with Claude reading scanned pages, the OCR library isn't needed
+  try { await Promise.all((AI() ? PDF_LIBS.slice(0, 1) : PDF_LIBS).map(loadScript)); } catch (e) { console.error(e); }
+  if (typeof pdfjsLib === 'undefined' || (!AI() && typeof Tesseract === 'undefined')) { toast('The PDF reader did not load. Check your connection and try again.'); return false; }
   pdfjsLib.GlobalWorkerOptions.workerSrc ||= 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   return true;
 }
@@ -731,7 +739,7 @@ async function readVisual(file, forceOcr = false) {
   renderVisual();
   try {
     await PdfImport.readFile(file, {
-      forceOcr, signal: ctl.signal,
+      forceOcr, signal: ctl.signal, readScan: AI()?.readScan,
       onPage: ({ n, total, mode, rows }) => {
         if (S.importState?.visual !== V) return;
         V.total = total;
@@ -759,7 +767,7 @@ function drawVisual() {
   box.innerHTML = `
     ${V.status ? `<p class="note">${esc(V.status)}</p>` : ''}
     <div class="row"><strong>${V.done ? 'Finished reading' : 'Reading'} ${esc(I.file)}</strong><span class="muted small">${V.pages.length}${V.total ? ' of ' + V.total : ''} pages · ${V.rows.length.toLocaleString()} rows found</span></div>
-    ${!V.done && (V.forceOcr || !V.pages.length || scanned) ? `<p class="small muted">Scanned pages are read letter by letter on this device, so each one can take up to a minute. The first scan also downloads the Arabic reading data once.</p>` : ''}
+    ${!V.done && (V.forceOcr || !V.pages.length || scanned) ? `<p class="small muted">${AI() ? 'Claude reads each scanned page or photo, which takes about half a minute a page.' : 'Scanned pages are read letter by letter on this device, so each one can take up to a minute. The first scan also downloads the Arabic reading data once.'}</p>` : ''}
     ${V.pages.length ? `<div class="chips">${V.pages.map(p => `<span class="chip ${p.count ? 'best' : 'warn'}" title="${p.mode === 'scan' ? 'Read from the page image' : 'Read from the PDF text'}">Page ${p.n}: ${p.count} rows${p.mode === 'scan' ? ' · scanned' : ''}</span>`).join('')}</div>` : ''}
     ${V.rows.length ? `<p class="small muted">Check the rows against the file, especially prices${scanned ? ' and names on scanned pages' : ''}. Fix anything here before importing; you can also rename products later.</p>
     <div class="tablebox"><table><thead><tr><th>Page</th><th>Item</th><th>Details</th><th class="num">Price</th><th></th></tr></thead><tbody>
@@ -962,7 +970,7 @@ async function doImport(rows) {
       ...(I.cols ? { header: I.header, columns: I.cols.map((x, c) => ({ header: headText(I, c), use: x.use, label: x.label, c })).sort((a, b) => (I.cols[a.c].rank ?? 1000 + a.c) - (I.cols[b.c].rank ?? 1000 + b.c)).map(({ c, ...x }) => ({ ...x, col: c })) } : S.suppliers[sid]?.columns ? { header: S.suppliers[sid].header, columns: S.suppliers[sid].columns } : {}) });
     S.importState = null; S.pendingImport = { sid, chunks: chunks.length }; toast(`Imported ${rows.length.toLocaleString()} items from ${name}`);
     changed(); // the saved rows may already be here (local writes show at once), so check now rather than on the next change
-  } catch (e) { console.error(e); toast(e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'The import stopped partway. Try again.'); render(); }
+  } catch (e) { console.error(e); toast(e?.friendly || (e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'The import stopped partway. Try again.')); render(); }
 }
 // a delete button asks for a second click within 4 seconds
 function arm(btn, text) {
@@ -1063,7 +1071,11 @@ async function saveQuote() {
 // ---------- excel export ----------
 async function saveXlsx(wb, filename) {
   wb.Workbook = { Views: [{ RTL: true }] };
-  try { XLSX.writeFile(wb, filename); toast('Excel file downloaded'); }
+  try {
+    if (window.SPD_SAVE_FILE) await window.SPD_SAVE_FILE(filename, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    else XLSX.writeFile(wb, filename);
+    toast('Excel file downloaded');
+  }
   catch (e) { console.error(e); toast('The file could not be saved here.'); }
 }
 function sheet(aoa, widths, moneyCols, startRow) {
@@ -1184,6 +1196,7 @@ function downloadBackup() {
   if (S.settings) docs['settings/main'] = S.settings;
   for (const q of Object.values(S.quotes)) { const { id, ...d } = q; docs['quotes/' + id] = d; }
   const blob = new Blob([JSON.stringify({ app: 'supply-price-desk', version: 1, exported: new Date().toISOString(), docs })], { type: 'application/json' });
+  if (window.SPD_SAVE_FILE) return window.SPD_SAVE_FILE(`Supply Price Desk backup ${fileDate()}.json`, blob).then(() => toast('Backup downloaded'), e => { console.error(e); toast('The backup was not saved.'); });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Supply Price Desk backup ${fileDate()}.json`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
@@ -1208,7 +1221,7 @@ async function restoreBackup(file) {
       await batch.commit();
     }
     toast('Backup loaded'); if (status) status.textContent = '';
-  } catch (e) { console.error(e); toast(e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'Loading stopped partway. Try again.'); }
+  } catch (e) { console.error(e); toast(e?.friendly || (e?.code === 'resource-exhausted' ? 'The free daily limit was reached. Try again tomorrow.' : 'Loading stopped partway. Try again.')); }
 }
 
 // ---------- events ----------
