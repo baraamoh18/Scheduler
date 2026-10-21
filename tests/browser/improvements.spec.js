@@ -158,9 +158,13 @@ test('a margin of 100% or more is refused when the margin is taken from the sale
   await page.locator('#st-m').press('Tab');
   await expect(page.locator('#st-m')).toHaveValue('20');
   // switching modes is refused while a margin is 100% or more
+  // each change redraws the settings on the next frame; typing before that would land in the old box
+  const redrawn = () => page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
   await page.locator('#st-mode').selectOption('markup');
+  await redrawn();
   await page.locator('#st-m').fill('150');
   await page.locator('#st-m').press('Tab');
+  await redrawn();
   await page.locator('#st-mode').selectOption('margin');
   await expect(app.toast(page)).toContainText('Some margins are 100% or more');
   await expect(page.locator('#st-mode')).toHaveValue('markup');

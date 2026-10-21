@@ -11,6 +11,8 @@ async function setField(page, sel, value) {
   const el = page.locator(sel);
   if (await el.evaluate(e => e.tagName) === 'SELECT') await el.selectOption(String(value));
   else { await el.fill(String(value)); await el.press('Tab'); }
+  // each change redraws the settings on the next frame; typing before that would land in the old box
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
 }
 
 test('pricing rules: default margin, margin on sale price, rounding, currency and company', async ({ page, openApp }) => {
