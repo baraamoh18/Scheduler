@@ -149,14 +149,15 @@
     }
     if (!shared) return null;
     const sameBrand = A.brands.filter(t => B.brands.includes(t));
+    // two different brands are different products (quality and price differ), so never the same
+    if (A.brands.length && B.brands.length && !sameBrand.length) return null;
     shared += sameBrand.reduce((s, t) => s + w(t), 0); // a brand only counts when both names share it
-    const otherBrand = A.brands.length && B.brands.length && !sameBrand.length ? [A.brands.join(' '), B.brands.join(' ')] : null;
     // a brand on one side only counts as an extra word, since the other name may hide a brand the list doesn't know
-    if (!otherBrand) { onlyA.push(...A.brands.filter(t => !sameBrand.includes(t))); onlyB.push(...B.brands.filter(t => !sameBrand.includes(t))); }
+    onlyA.push(...A.brands.filter(t => !sameBrand.includes(t))); onlyB.push(...B.brands.filter(t => !sameBrand.includes(t)));
     const wx = t => W.brands.has(t) ? w(t) / 2 : w(t); // a one-sided brand weighs half
     const wa = shared + onlyA.reduce((s, t) => s + wx(t), 0), wb = shared + onlyB.reduce((s, t) => s + wx(t), 0);
     const jac = shared / (wa + wb - shared), cont = shared / Math.min(wa, wb);
-    return { score: (jac + cont) / 2, jac, cont, onlyA, onlyB, spelled, sameBrand, otherBrand, oneSided };
+    return { score: (jac + cont) / 2, jac, cont, onlyA, onlyB, spelled, sameBrand, oneSided };
   }
 
   const LEVELS = ['low', 'medium', 'high'];
@@ -193,8 +194,7 @@
         const ratio = lo > 0 ? hi / lo : 1;
         if (ratio >= 2.5) { notes.push({ text: `Prices are ${ratio.toFixed(1)}× apart, so check the pack or unit` }); level = Math.min(level, 1); }
         if (notes.filter(n => !n.ok).length > 1) level = 0;
-        if (c.otherBrand) { notes.unshift({ text: 'Different brand: ' + c.otherBrand.map(show).join(' / ') }); level = 0; }
-        else if (c.sameBrand.length) notes.push({ ok: true, text: 'Same brand ' + c.sameBrand.map(show).join(' ') });
+        if (c.sameBrand.length) notes.push({ ok: true, text: 'Same brand ' + c.sameBrand.map(show).join(' ') });
         if (c.spelled.length) notes.push({ ok: true, text: 'Spelled differently: ' + c.spelled.map(([x, y]) => x + ' / ' + y).join(', ') });
         out.push({ a, b, pk, score: c.score, level: LEVELS[level], rank: level + c.score, onlyA: c.onlyA, onlyB: c.onlyB, notes });
       }

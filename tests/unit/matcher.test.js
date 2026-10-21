@@ -105,16 +105,15 @@ test('words that tell items apart block a pair; on one side only they are flagge
   assert.ok(s.notes.some(n => n.text === 'Only one name says اطفال'));
 });
 
-test('a different brand is weak and says so; the same brand is noted', () => {
-  const [s] = suggest([item('a', 'حزام ظهر عادي ميراج L', 'n', 90), item('b', 'موف حزام ظهر عادى L', 'd', 95)]);
-  assert.equal(s.level, 'low');
-  assert.equal(s.notes[0].text, 'Different brand: ميراج / موف');
+test('two different brands are never suggested; the same brand is noted', () => {
+  assert.deepEqual(pairs([item('a', 'حزام ظهر عادي ميراج L', 'n', 90), item('b', 'موف حزام ظهر عادى L', 'd', 95)]), []);
+  // a brand written as two words is still one brand
+  assert.deepEqual(pairs([item('a', 'شراب دوالي ميدي كير L', 'n', 75), item('b', 'شراب دوالي ميراج L', 'd', 75)]), []);
   const [m] = suggest([item('a', 'Mانكل مفتوح ميراج', 'n', 29), item('b', 'ميراج انكل مفتوح M', 'd', 31)]);
   assert.equal(m.level, 'high');
   assert.ok(m.notes.some(n => n.ok && n.text === 'Same brand ميراج'));
-  // a brand written as two words is shown the way the list writes it
-  const [k] = suggest([item('a', 'شراب دوالي ميدي كير L', 'n', 75), item('b', 'شراب دوالي ميراج L', 'd', 75)]);
-  assert.equal(k.notes[0].text, 'Different brand: ميدي كير / ميراج');
+  const [k] = suggest([item('a', 'شراب دوالي ميدي كير L', 'n', 75), item('b', 'ميدى كير شراب دوالى L', 'd', 75)]);
+  assert.ok(k.notes.some(n => n.ok && n.text === 'Same brand ميدي كير'));
 });
 
 test('grams and percentages are kept apart from sizes, and codes are not sizes', () => {
@@ -128,11 +127,10 @@ test('grams and percentages are kept apart from sizes, and codes are not sizes',
 
 test('the word lists can be changed, and the change is used right away', () => {
   try {
-    const sugar = () => suggest([item('a', 'جهاز سكر اونكول', 'n', 300), item('b', 'جهاز سكر ساندا', 'd', 300)])[0];
-    assert.ok(!sugar().notes.some(n => /Different brand/.test(n.text)));
+    const sugar = () => suggest([item('a', 'جهاز سكر اونكول', 'n', 300), item('b', 'جهاز سكر ساندا', 'd', 300)]);
+    assert.equal(sugar().length, 1);
     globalThis.Matcher.setWords({ brands: 'اونكول = اون كول\nساندا' });
-    assert.equal(sugar().level, 'low');
-    assert.equal(sugar().notes[0].text, 'Different brand: اونكول / ساندا');
+    assert.equal(sugar().length, 0);
     globalThis.Matcher.setWords({ same: 'دعامه = ستنت' });
     assert.deepEqual(pairs([item('a', 'دعامة 12', 'n', 24), item('b', 'ستنت 12', 'd', 25)]), ['a+b:high']);
     globalThis.Matcher.setWords({ opposites: '' });

@@ -634,8 +634,8 @@ function renderMatching(v) {
     <div class="small muted ar">${p.detail ? esc(p.detail) + ' · ' : ''}${esc(p.best.sup)} ${fmt(p.best.price)}</div>
     ${only.length ? `<div class="small ar">Only in this name: <b>${only.map(esc).join('، ')}</b></div>` : ''}</div>`;
   v.innerHTML = `<div class="panel"><h2>Possible matches</h2>
-    <p class="muted">Items from different suppliers whose names look alike. Names are compared after writing digits, sizes and spelling the same way (٥سم = 5 سم, ى = ي). Same-meaning words, brands and words like اطفال / كبار come from Settings > Matching words. Items with a different size, weight or one of those words are never suggested, and the discount or stock columns are ignored. Each pair says why it was suggested and what differs, so you decide. Nothing is linked until you press Same product.</p>
-    <div class="stats"><div class="stat"><b>${count('high')}</b><span>very likely: same words and size</span></div><div class="stat"><b>${count('medium')}</b><span>possible: one name has extra words, or the price or pack looks different</span></div><div class="stat"><b>${count('low')}</b><span>weak: same kind and size, but a different brand or several things to check</span></div></div>
+    <p class="muted">Items from different suppliers whose names look alike. Names are compared after writing digits, sizes and spelling the same way (٥سم = 5 سم, ى = ي). Same-meaning words, brands and words like اطفال / كبار come from Settings > Matching words. Items with a different size, weight, brand or one of those words are never suggested, and the discount or stock columns are ignored. Each pair says why it was suggested and what differs, so you decide. Nothing is linked until you press Same product.</p>
+    <div class="stats"><div class="stat"><b>${count('high')}</b><span>very likely: same words and size</span></div><div class="stat"><b>${count('medium')}</b><span>possible: one name has extra words, or the price or pack looks different</span></div><div class="stat"><b>${count('low')}</b><span>weak: same kind and size, but several things to check</span></div></div>
     <div class="row">
       <input class="grow" id="mq" type="search" placeholder="Check one kind of item, e.g. شاش" value="${esc(S.mq)}" aria-label="Search matches">
       <select id="mlevel" aria-label="Show" ${q ? 'disabled' : ''}><option value="likely">Very likely and possible</option><option value="high">Only very likely</option><option value="all">All, including weak</option></select>
@@ -1211,7 +1211,7 @@ function renderSettings(v) {
       <div class="field"><label for="mw-same">Same meaning, joined with =</label><textarea id="mw-same" class="ar" rows="10" placeholder="دريسنج = درسنج = غيار جراحي">${esc(wordList('same'))}</textarea>
         <span class="small muted">For example a spelling, a synonym or an English name. Items written either way match.</span></div>
       <div class="field"><label for="mw-brands">Brands, one per line</label><textarea id="mw-brands" class="ar" rows="10">${esc(wordList('brands'))}</textarea>
-        <span class="small muted">Two items of different brands are only shown as weak, marked "Different brand". A brand written two ways goes on one line with =.</span></div>
+        <span class="small muted">Items of two different brands are never suggested as the same product. A brand written two ways goes on one line with =.</span></div>
       <div class="field"><label for="mw-opp">Words that tell items apart, joined with /</label><textarea id="mw-opp" class="ar" rows="7">${esc(wordList('opposites'))}</textarea>
         <span class="small muted">Two names with different words from the same line are never suggested, for example اطفال / كبار.</span></div>
     </div>
