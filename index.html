@@ -1170,7 +1170,8 @@ function renderSettings(v) {
   const save = (patch, dbPatch = patch) => { S.settings = { ...settings(), ...patch }; setDoc('settings/main', dbPatch, MERGE); changed(); };
   $('#st-m').onchange = e => { const n = parseFloat(e.target.value); if (!isNaN(n) && marginOk(n)) save({ defaultMargin: n / 100 }); else render(); };
   $('#st-mode').onchange = e => {
-    const all = [st.defaultMargin, ...Object.values(st.catMargins), ...Object.values(S.prodOv).map(o => o.margin).filter(m => m != null)];
+    const cur = settings(); // not st: a change just before this may not have redrawn the page yet
+    const all = [cur.defaultMargin, ...Object.values(cur.catMargins), ...Object.values(S.prodOv).map(o => o.margin).filter(m => m != null)];
     if (e.target.value === 'margin' && all.some(m => m >= 1)) { toast('Some margins are 100% or more, which has no price when taken from the sale price. Lower them first.'); render(); return; }
     save({ mode: e.target.value });
   };
