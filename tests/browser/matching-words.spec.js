@@ -64,8 +64,8 @@ test('Settings > Matching words: edit, save, and go back to the starting lists',
   await expect.poll(async () => (await app.doc(page, 'settings/main')).words.brands).toBe('اونكول\nساندا');
   await app.tab(page, 'matching');
   await page.locator('#mlevel').selectOption('all');
-  await expect(matchRow(page, 'اونكول')).toContainText('Different brand: اونكول / ساندا');
-  await expect(matchRow(page, 'اونكول').locator('.chip')).toHaveText('Weak');
+  await expect(matchRow(page, 'كانيولا')).toHaveCount(1);
+  await expect(matchRow(page, 'اونكول')).toHaveCount(0); // two different brands: never suggested
   await app.tab(page, 'settings');
   await page.locator('#mw-reset').click();
   await page.locator('#mw-reset').click();
