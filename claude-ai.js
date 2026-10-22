@@ -101,8 +101,11 @@ Reply with JSON only, in this shape:
   // ---------- matching: is this suggested pair the same product? ----------
   const matchButton = s => `<button class="btn small" data-ai-match="${esc(s.pk)}">Ask Claude</button>`;
   const matchResult = s => `<div class="ai-match" data-ai-slot="${esc('m:' + s.pk)}">${matchInner(s.pk)}</div>`;
+  // a pair Claude checked on its own (Ask Claude) or in a review; reviews are saved in matching/claude
+  const matchAnswer = pk => answers.get('m:' + pk) || (S.claude[pk] ? { state: 'done', data: { verdict: S.claude[pk].v, why: S.claude[pk].why } } : null);
+  const verdictOf = pk => { const a = matchAnswer(pk); return a?.state === 'done' ? ({ same: 'same', different: 'different' }[a.data?.verdict] || 'unsure') : ''; };
   function matchInner(pk) {
-    const a = answers.get('m:' + pk);
+    const a = matchAnswer(pk);
     if (!a) return '';
     if (a.state === 'busy') return `<p class="small muted">Claude is checking these two items…</p>`;
     if (a.state === 'error') return `<p class="small warn-text">${esc(a.error)}</p>`;
@@ -123,6 +126,86 @@ Reply with JSON only: {"verdict": "same" or "different" or "unsure", "why": "one
     try { put(key, { state: 'done', data: await (await sampler()).json(prompt, { modelTier: 'default' }), view }); }
     catch (e) { console.error(e); put(key, { state: 'error', error: errText(e), view }); }
   }
+
+  // ---------- matching: Claude reviews many suggested pairs at once ----------
+  // Pairs go to Claude 20 at a time; each verdict is saved (matching/claude) so a pair is never paid for twice.
+  // Nothing is linked until someone presses "Link…", which asks for a second click.
+  const REVIEW_BATCH = 20, REVIEW_MAX = 200;
+  const review = { running: false, stop: false, done: 0, total: 0, error: '', filter: '' };
+  const FILTERS = [['', 'Show every answer'], ['same', 'Claude: same'], ['different', 'Claude: different'], ['unsure', 'Claude: not sure'], ['todo', 'Not checked yet']];
+  const reviewFilter = list => review.filter ? list.filter(s => (verdictOf(s.pk) || 'todo') === review.filter) : list;
+  let reviewList = [];
+  function reviewBox(list) {
+    reviewList = list;
+    const n = v => list.filter(s => (verdictOf(s.pk) || 'todo') === v).length;
+    const todo = n('todo'), same = n('same'), diff = n('different'), batch = Math.min(todo, REVIEW_MAX);
+    const btn = review.running ? `<button class="btn small" id="ai-rv-stop">Stop</button>`
+      : todo ? `<button class="btn small" id="ai-rv-go">Check ${batch.toLocaleString()} with Claude</button>` : '';
+    return `<div class="ai" id="ai-review">${head('Claude review of these suggestions', btn)}
+      <p class="small muted">Claude reads each pair and says if it is the same product: same type, size and brand (two brands are always different). ${todo > REVIEW_MAX ? `It checks up to ${REVIEW_MAX} at a time to keep your Claude usage in check. ` : ''}Nothing is linked until you press a button, so check the pairs first.</p>
+      ${review.running ? `<p class="small">Claude has checked ${review.done} of ${review.total}…</p>` : ''}
+      ${review.error ? `<p class="small warn-text">${esc(review.error)}</p>` : ''}
+      <div class="row small"><span class="chip best">${same} same</span><span class="chip warn">${diff} different</span><span class="chip">${n('unsure')} not sure</span><span class="chip">${todo} not checked</span>
+        <select id="ai-rv-filter" aria-label="Show by Claude's answer">${FILTERS.map(([v, l]) => `<option value="${v}" ${review.filter === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        ${same && !review.running ? `<button class="btn small primary" id="ai-rv-link">Link the ${same} Claude says are the same</button>` : ''}
+        ${diff && !review.running ? `<button class="btn small" id="ai-rv-hide">Hide the ${diff} Claude says are different</button>` : ''}</div></div>`;
+  }
+  async function runReview() {
+    const todo = reviewList.filter(s => !verdictOf(s.pk)).slice(0, REVIEW_MAX);
+    if (!todo.length || review.running) return;
+    Object.assign(review, { running: true, stop: false, done: 0, total: todo.length, error: '' }); render();
+    const side = p => ({ name: p.name, details: p.detail || undefined, suppliers: [...new Set(p.offers.map(o => o.sup))].join(', '), price: r2(p.best.net) });
+    try {
+      const sample = await sampler();
+      for (let i = 0; i < todo.length && !review.stop; i += REVIEW_BATCH) {
+        const part = todo.slice(i, i + REVIEW_BATCH);
+        const prompt = `${ROLE}
+
+Each pair below is two items from different suppliers whose names look alike (JSON; "n" numbers the pair). For each pair decide if they are the same product: same type, same size or variant, and the same brand. Two different brands are always different products, even when everything else matches, because their quality differs. A brand named on one side only is fine. Different spellings, word order, Arabic/English and digit styles don't matter. A big price gap usually means a box against one piece, which alone doesn't make them different.
+${JSON.stringify(part.map((s, j) => ({ n: j + 1, itemA: side(s.a), itemB: side(s.b) })))}
+
+Reply with JSON only: {"results": [{"n": the pair's number, "verdict": "same" or "different" or "unsure", "why": "a few words"}]}, one result per pair.`;
+        const out = await sample.json(prompt, { modelTier: 'default' });
+        const map = {};
+        for (const r of Array.isArray(out?.results) ? out.results : []) {
+          const s = part[(+r.n || 0) - 1]; if (!s) continue;
+          map[s.pk] = { v: ['same', 'different'].includes(r.verdict) ? r.verdict : 'unsure', why: String(r.why ?? '').slice(0, 300) };
+        }
+        Object.assign(S.claude, map);
+        setDoc('matching/claude', { map }, MERGE);
+        review.done += part.length;
+        render();
+      }
+    } catch (e) { console.error(e); review.error = errText(e); }
+    review.running = false; render();
+  }
+  // links every pair Claude marked same; pairs that share an item end up as one product
+  function linkSame() {
+    const pairs = reviewList.filter(s => verdictOf(s.pk) === 'same');
+    const root = {}, find = p => root[p] && root[p] !== p ? (root[p] = find(root[p])) : p;
+    for (const s of pairs) { const a = find(s.a.pid), b = find(s.b.pid); if (a !== b) root[b] = a; }
+    const keys = [];
+    for (const p of new Set(pairs.flatMap(s => [s.a.pid, s.b.pid]))) {
+      const to = find(p); if (to === p) continue;
+      for (const o of D.byPid[p]?.offers || []) { S.links[o.key] = to; keys.push(o.key); }
+    }
+    if (keys.length) { saveLinks(keys); changed(); }
+    review.filter = ''; toast(`Linked ${pairs.length} pairs. Prices are now compared side by side.`);
+  }
+  function hideDifferent() {
+    const pks = reviewList.filter(s => verdictOf(s.pk) === 'different').map(s => s.pk);
+    pks.forEach(pk => S.dismissed[pk] = true);
+    setDoc('matching/dismissed', { map: Object.fromEntries(pks.map(pk => [pk, true])) }, MERGE); changed();
+    review.filter = ''; toast(`Hid ${pks.length} pairs`);
+  }
+  document.addEventListener('click', e => {
+    const t = e.target.closest('button'); if (!t) return;
+    if (t.id === 'ai-rv-go') runReview();
+    else if (t.id === 'ai-rv-stop') { review.stop = true; t.disabled = true; }
+    else if (t.id === 'ai-rv-link') { if (arm(t, 'Click again to link them')) linkSame(); }
+    else if (t.id === 'ai-rv-hide') { if (arm(t, 'Click again to hide them')) hideDifferent(); }
+  });
+  document.addEventListener('change', e => { if (e.target.id === 'ai-rv-filter') { review.filter = e.target.value; S.mshow = 80; render(); } });
 
   // ---------- compare: explain the grid on screen ----------
   let grid = null;
@@ -255,5 +338,5 @@ Question: `;
     }
   });
 
-  window.SPD_AI = { productBox, matchButton, matchResult, compareBox, renderAsk, readScan };
+  window.SPD_AI = { productBox, matchButton, matchResult, reviewBox, reviewFilter, compareBox, renderAsk, readScan };
 })();

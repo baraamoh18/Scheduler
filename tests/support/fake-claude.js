@@ -46,6 +46,11 @@
     const a = cfg.answers || {};
     if (/^Read this page/.test(input)) return a.scan;
     if (/Two items from different suppliers/.test(input)) return a.match;
+    // a review of many pairs: answers.review = {"part of a name": "same" | "different"}, others "unsure"
+    if (/^Each pair below/m.test(input)) {
+      const pairs = JSON.parse(input.split('\n').find(l => l.startsWith('[{"n":')));
+      return { results: pairs.map(p => ({ n: p.n, verdict: Object.entries(a.review || {}).find(([k]) => (p.itemA.name + p.itemB.name).includes(k))?.[1] || 'unsure', why: 'checked' })) };
+    }
     // '$0', '$1' in a product answer stand for the keys of the offers in the prompt, in order
     const keys = [...input.matchAll(/"key":"([^"]+)"/g)].map(m => m[1]);
     return JSON.parse(JSON.stringify(a.product || {}).replace(/"\$(\d)"/g, (m, i) => JSON.stringify(keys[+i])));
