@@ -97,6 +97,49 @@ test('Ask Claude checks a suggested match without linking anything', async ({ pa
   expect((await store(page))['matching/links']).toBeUndefined();
 });
 
+test('Claude reviews the suggested pairs; the same ones can be linked and the different ones hidden', async ({ page, openPage }) => {
+  await start(openPage, page, { answers: { review: { 'سرنج': 'same', 'رباط': 'different' } } });
+  await app.tab(page, 'matching');
+  const box = page.locator('#ai-review');
+  await box.getByRole('button', { name: 'Check 3 with Claude' }).click();
+  await expect(box).toContainText('1 same');
+  await expect(box).toContainText('1 different');
+  await expect(box).toContainText('1 not sure');
+  await expect(box).toContainText('0 not checked');
+  await expect(box.getByRole('button', { name: /Check \d+ with Claude/ })).toHaveCount(0); // nothing left to pay for
+  await expect(page.locator('.match-row', { hasText: 'سرنجة 5 مل' })).toContainText('Claude: same product');
+  expect(Object.values((await store(page))['matching/claude'].map).map(x => x.v).sort()).toEqual(['different', 'same', 'unsure']);
+  expect((await calls(page)).filter(c => /^Each pair below/m.test(c.input))).toHaveLength(1); // one batch
+  expect((await store(page))['matching/links']).toBeUndefined(); // nothing linked yet
+  // filter by Claude's answer
+  await page.locator('#ai-rv-filter').selectOption('same');
+  await expect(page.locator('.match-row')).toHaveCount(1);
+  await page.locator('#ai-rv-filter').selectOption('');
+  // linking asks for a second click
+  const link = box.getByRole('button', { name: 'Link the 1 Claude says are the same' });
+  await link.click();
+  await expect(box.getByRole('button', { name: 'Click again to link them' })).toBeVisible();
+  await box.getByRole('button', { name: 'Click again to link them' }).click();
+  await expect(page.locator('.match-row', { hasText: 'سرنجة 5 مل' })).toHaveCount(0);
+  await expect.poll(async () => Object.keys((await store(page))['matching/links']?.map || {})).toHaveLength(1);
+  await box.getByRole('button', { name: 'Hide the 1 Claude says are different' }).click();
+  await box.getByRole('button', { name: 'Click again to hide them' }).click();
+  await expect(page.locator('.match-row')).toHaveCount(1);
+  await expect.poll(async () => Object.keys((await store(page))['matching/dismissed']?.map || {})).toHaveLength(1);
+});
+
+test('linking Claude\'s "same" pairs joins an item sold by three suppliers into one product', async ({ page, openPage }) => {
+  const sup = (id, name) => ({ id, name, rows: [['كانيولا 22 ازرق', 6]] });
+  await openPage({ docs: seed({ suppliers: [sup('x', 'X'), sup('y', 'Y'), sup('z', 'Z')] }), answers: { review: { 'كانيولا': 'same' } } });
+  await app.ready(page);
+  await app.tab(page, 'matching');
+  const box = page.locator('#ai-review');
+  await box.getByRole('button', { name: /Check \d+ with Claude/ }).click();
+  await box.getByRole('button', { name: /Link the \d+ Claude says/ }).click();
+  await box.getByRole('button', { name: 'Click again to link them' }).click();
+  await expect(page.locator('#sub')).toHaveText('1 products from 3 suppliers');
+});
+
 test('Explain this comparison streams Claude\'s summary of the grid', async ({ page, openPage }) => {
   await start(openPage, page, { chatText: 'Nile is cheapest per piece on every size.' });
   await app.tab(page, 'compare');

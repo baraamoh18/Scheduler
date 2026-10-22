@@ -154,7 +154,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 const AI = () => window.SPD_AI || null;
 const S = {
   db: null, ready: false, gated: false,
-  suppliers: {}, chunks: {}, links: {}, dismissed: {}, packs: {}, prodOv: {}, settings: null, quotes: {},
+  suppliers: {}, chunks: {}, links: {}, dismissed: {}, packs: {}, claude: {}, prodOv: {}, settings: null, quotes: {},
   tab: 'products', q: '', filter: 'all', mq: '', mlevel: 'likely', mshow: 80, cq: '', cmulti: false, cat: '', sort: 'name', page: 0,
   quote: loadDraft(), importState: null,
 };
@@ -442,8 +442,9 @@ function listen(db) {
     db.collection('products').onSnapshot(once(s => { S.prodOv = {}; s.docs.forEach(d => S.prodOv[d.id] = { ...d.data() }); }), err),
     db.collection('quotes').onSnapshot(once(s => { S.quotes = {}; s.docs.forEach(d => S.quotes[d.id] = { id: d.id, ...d.data() }); }), err),
     db.collection('matching').onSnapshot(once(s => {
-      S.links = {}; S.dismissed = {}; S.packs = {};
-      s.docs.forEach(d => { if (['links', 'dismissed', 'packs'].includes(d.id)) S[d.id] = { ...(d.data().map || {}) }; });
+      // claude: Claude's verdicts on suggested pairs, {pk: {v, why}} (claude.ai copy only)
+      S.links = {}; S.dismissed = {}; S.packs = {}; S.claude = {};
+      s.docs.forEach(d => { if (['links', 'dismissed', 'packs', 'claude'].includes(d.id)) S[d.id] = { ...(d.data().map || {}) }; });
     }), err),
     db.doc('settings/main').onSnapshot(once(d => { S.settings = d.exists ? d.data() : null; }), err),
   );
@@ -627,8 +628,9 @@ function renderMatching(v) {
   const all = suggestions(), q = S.mq.trim();
   const count = l => all.filter(s => s.level === l).length;
   // a search shows every candidate for those items, weak ones included
-  const list = q ? all.filter(s => matches(s.a.name + ' ' + s.b.name, q))
+  const base = q ? all.filter(s => matches(s.a.name + ' ' + s.b.name, q))
     : S.mlevel === 'all' ? all : S.mlevel === 'high' ? all.filter(s => s.level === 'high') : likely(all);
+  const list = AI() ? AI().reviewFilter(base) : base;
   const shown = list.slice(0, S.mshow);
   const side = (p, only) => `<div><div class="ar" style="font-weight:500">${esc(p.name)}</div>
     <div class="small muted ar">${p.detail ? esc(p.detail) + ' · ' : ''}${esc(p.best.sup)} ${fmt(p.best.price)}</div>
@@ -639,7 +641,7 @@ function renderMatching(v) {
     <div class="row">
       <input class="grow" id="mq" type="search" placeholder="Check one kind of item, e.g. شاش" value="${esc(S.mq)}" aria-label="Search matches">
       <select id="mlevel" aria-label="Show" ${q ? 'disabled' : ''}><option value="likely">Very likely and possible</option><option value="high">Only very likely</option><option value="all">All, including weak</option></select>
-    </div></div>
+    </div>${AI() ? AI().reviewBox(base) : ''}</div>
     <div class="tablebox">${shown.length ? shown.map(s => `<div class="match-row">
       ${side(s.a, s.onlyA)}
       <div class="score">${levelChip(s.level)}<div>${Math.round(s.score * 100)}% alike</div></div>
@@ -647,7 +649,7 @@ function renderMatching(v) {
       <div class="row"><button class="btn small primary" data-merge="${esc(s.b.pid)}" data-into="${esc(s.a.pid)}" data-learn="${esc(s.pk)}">Same product</button><button class="btn small" data-dismiss="${esc(s.pk)}">Different</button>${AI() ? AI().matchButton(s) : ''}</div>
       ${s.notes.length ? `<div class="match-notes small">${s.notes.map(n => `<span class="${n.ok ? 'muted' : 'warn-text'}">${n.ok ? '✓' : '!'} ${esc(n.text)}</span>`).join('')}</div>` : ''}
       ${AI() ? AI().matchResult(s) : ''}
-    </div>`).join('') : `<div class="empty">${q ? 'No items from different suppliers look alike for this search. Each supplier may call it differently: try a shorter word, or link items by hand from a product page.' : 'No likely matches between your suppliers right now. Choose "All, including weak" to see more, or search for one kind of item.'}</div>`}
+    </div>`).join('') : `<div class="empty">${base.length ? 'None of these suggestions has that answer from Claude. Change the Claude filter above.' : q ? 'No items from different suppliers look alike for this search. Each supplier may call it differently: try a shorter word, or link items by hand from a product page.' : 'No likely matches between your suppliers right now. Choose "All, including weak" to see more, or search for one kind of item.'}</div>`}
     ${list.length > shown.length ? `<div class="pager"><span class="muted small">${shown.length} of ${list.length} shown</span><button class="btn small" id="mmore">Show more</button></div>` : ''}</div>`;
   $('#mlevel').value = S.mlevel;
   const mq = $('#mq'); mq.oninput = () => { S.mq = mq.value; S.mshow = 80; clearTimeout(mq.t); mq.t = setTimeout(() => { render(); const n = $('#mq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 200); };
@@ -1261,6 +1263,7 @@ function downloadBackup() {
   for (const sup of Object.values(S.suppliers)) { const { id, ...d } = sup; docs['suppliers/' + id] = d; }
   for (const [id, rows] of Object.entries(S.chunks)) docs['items/' + id] = { rows };
   docs['matching/links'] = { map: S.links }; docs['matching/dismissed'] = { map: S.dismissed }; docs['matching/packs'] = { map: S.packs };
+  if (Object.keys(S.claude).length) docs['matching/claude'] = { map: S.claude };
   for (const [pid, ov] of Object.entries(S.prodOv)) docs['products/' + pid] = ov;
   if (S.settings) docs['settings/main'] = S.settings;
   for (const q of Object.values(S.quotes)) { const { id, ...d } = q; docs['quotes/' + id] = d; }
