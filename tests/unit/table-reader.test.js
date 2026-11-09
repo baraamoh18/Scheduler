@@ -35,6 +35,11 @@ test('reads a right-to-left table with a header', () => {
   assert.deepEqual(rows.map(r => [r.name, r.price]), [['شاش طبي 10 سم', 25], ['سرنجة 5 مل', 2.5]]);
 });
 
+test('turns the joined lam-alef letters some PDFs use into normal letters', () => {
+  const { rows } = T.readPieces(rtlTable([['بﻻستر مدور', '22'], ['ﻷكياس ﻵلة ﻹبرة', '15'], ['قطن ﻼصق', '10']]));
+  assert.deepEqual(rows.map(r => r.name), ['بلاستر مدور', 'لأكياس لآلة لإبرة', 'قطن لاصق']);
+});
+
 test('reads a table without a header from how the columns line up', () => {
   const { rows } = T.readPieces(rtlTable([['شاش طبي 10 سم', '25'], ['سرنجة 5 مل', '2.50'], ['رباط ضاغط', '15']], null));
   assert.deepEqual(rows.map(r => r.price), [25, 2.5, 15]);
