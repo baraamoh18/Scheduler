@@ -207,36 +207,33 @@ Reply with JSON only: {"results": [{"n": the pair's number, "verdict": "same" or
   });
   document.addEventListener('change', e => { if (e.target.id === 'ai-rv-filter') { review.filter = e.target.value; S.mshow = 80; render(); } });
 
-  // ---------- compare: explain the grid on screen ----------
+  // ---------- compare: explain the prices of the item on screen ----------
   let grid = null;
-  const compareKey = q => 'c:' + norm(q) + (S.cmulti ? ':multi' : '');
-  function compareBox(q, rows, cols) {
-    grid = { q, rows, cols };
-    const key = compareKey(q);
+  const compareKey = pid => 'c:' + pid + (S.cweak ? ':weak' : '');
+  function compareBox(p, rows) {
+    grid = { p, rows };
+    const key = compareKey(p.pid);
     return `<div class="ai" data-ai-slot="${esc(key)}">${compareInner(key)}</div>`;
   }
   function compareInner(key) {
     const a = answers.get(key);
     const top = head('Explain this comparison', a?.state === 'busy' ? '' : `<button class="btn small" data-ai-compare="${esc(key)}">${a ? 'Ask again' : 'Ask Claude'}</button>`);
-    if (!a) return top + `<p class="small muted">Claude sums up who is cheapest for each size, and points out prices that look like a box or a different product.</p>`;
+    if (!a) return top + `<p class="small muted">Claude says who is cheapest for this item, and points out prices that look like a box or a different product.</p>`;
     if (a.state === 'error') return top + `<p class="small warn-text">${esc(a.error)}</p>`;
-    return top + `<div class="ai-out"><div class="ai-text">${a.text ? md(a.text) : '<span class="muted">Claude is reading the grid…</span>'}</div></div>`;
+    return top + `<div class="ai-out"><div class="ai-text">${a.text ? md(a.text) : '<span class="muted">Claude is reading the prices…</span>'}</div></div>`;
   }
   async function askCompare(key) {
-    if (!grid || compareKey(grid.q) !== key || answers.get(key)?.state === 'busy') return;
+    if (!grid || compareKey(grid.p.pid) !== key || answers.get(key)?.state === 'busy') return;
     const view = () => compareInner(key);
-    let left = 220; // offers sent at most, so a very wide search stays a reasonable size
-    const rows = grid.rows.map(r => {
-      const os = r.os.slice(0, Math.max(0, left)); left -= os.length;
-      return { size: r.size || 'no size in the name', offers: os.map(o => { const { key, ...f } = offerFacts(o); return f; }) };
-    }).filter(r => r.offers.length);
+    // at most 220 offers, so a very common item stays a reasonable size
+    const offers = grid.rows.slice(0, 220).map(r => { const { key, ...f } = offerFacts(r.o); return { ...f, match: r.guess ? 'guess from the name: ' + LEVEL_TEXT[r.guess.level] : 'linked by a person, or the item itself' }; });
     put(key, { state: 'busy', text: '', view });
     const prompt = `${ROLE}
 
-The Compare grid for the search "${grid.q}": one row per size, with every supplier's offers (JSON). Suppliers: ${grid.cols.map(c => c.name).join(', ')}.
-${JSON.stringify(rows)}
+The Compare view for the item "${grid.p.name}": its price at each supplier, cheapest first (JSON). "match" says whether an offer is confirmed as this item or only guessed from its name.
+${JSON.stringify(offers)}
 
-In under 180 words, as short bullet points: who is cheapest per piece for each size (or group of sizes), which supplier is cheapest overall, any price that looks like a box or a different product rather than one piece, and sizes only one supplier sells. No preamble.`;
+In under 180 words, as short bullet points: who is cheapest per piece, how much more the others charge, any price that looks like a box or a different product rather than one piece, and any guess that looks like a different item. No preamble.`;
     try {
       const res = await (await sampler())(prompt, { modelTier: 'default', onText: u => put(key, { state: 'busy', text: u.text, view }) });
       put(key, { state: 'done', text: res.text, view });

@@ -1,5 +1,5 @@
 // The Matching tab (suggested pairs, Same product / Different, levels, search, show more)
-// and the Compare tab (one kind of item by size and supplier).
+// and the Compare tab (one item's price at each supplier).
 const { test, expect, seed, app } = require('../support/app');
 const { nile, delta } = require('../fixtures/sample-data');
 
@@ -93,40 +93,66 @@ test('after importing a second supplier the Matching tab opens by itself', async
   await expect(page.locator('.match-row')).toHaveCount(3);
 });
 
-test('compare: sizes down the side, suppliers across, the cheapest marked', async ({ page, openApp }) => {
+test('compare: search, pick one item, its prices run cheapest first and a guess can be confirmed', async ({ page, openApp }) => {
   await start(openApp, page);
   await app.tab(page, 'compare');
   await expect(page.locator('#view table')).toHaveCount(0);
   await page.locator('#cq').fill('شاش');
-  await expect(page.locator('#view thead th')).toHaveText(['Size', 'النيل الطبية', 'الدلتا للمستلزمات']);
-  await expect(page.locator('#view tbody td.size')).toHaveText(['7.5', '10 × 10']);
-  const ten = page.locator('#view tbody tr', { hasText: '10 × 10' });
-  await expect(ten.locator('.offer.cheapest')).toContainText('22.00');
-  await expect(ten.locator('.chip.best')).toHaveText('cheapest');
-  await expect(page.locator('#view .pager')).toContainText('3 items in 2 sizes from 2 suppliers');
-  await page.locator('#cmulti').check();
-  await expect(page.locator('#view tbody tr')).toHaveCount(1);
-  // open an item from the grid, link it, and the grid says linked
-  await ten.locator('.offer button').first().click();
-  await page.locator('#pd-results').getByRole('button', { name: 'Same product' }).first().click();
-  await page.locator('#dlg [data-close]').click();
-  await expect(ten.locator('.chip', { hasText: 'linked' })).toHaveCount(2);
+  await expect(page.locator('#view thead th')).toHaveText(['Item', 'Supplier', 'Price', 'Other prices']);
+  await expect(page.locator('#view tbody tr')).toHaveCount(3); // one row per item, sizes are not grouped
+  await expect(page.locator('#view tbody tr', { hasText: 'شاش طبي 10' }).locator('td').last()).toHaveText('1');
+  await expect(page.locator('#view tbody tr', { hasText: 'شاش طبي 7.5' }).locator('td').last()).toHaveText('none');
+  await page.locator('#view [data-cpick]', { hasText: 'شاش طبي 10' }).click();
+
+  await expect(page.locator('#view thead th')).toHaveText(['Supplier', 'Item', 'Price', 'Same item?']);
+  const rows = page.locator('#view tbody tr');
+  await expect(rows.locator('td:first-child')).toHaveText(['الدلتا للمستلزمات', 'النيل الطبية']); // 22 before 25
+  await expect(rows.first()).toHaveClass('cheapest');
+  await expect(rows.first().locator('.chip.best')).toHaveText('cheapest');
+  await expect(rows.first().locator('.chip.lvl-high')).toHaveText('Very likely');
+  await expect(rows.last().locator('.chip')).toHaveText('This item');
+
+  // nothing is linked until a person says so
+  expect((await app.doc(page, 'matching/links'))?.map || {}).toEqual({});
+  await rows.first().getByRole('button', { name: 'Same product' }).click();
+  await expect(rows.locator('.chip', { hasText: 'Linked' })).toHaveCount(2);
+  await expect(rows.first().locator('.chip.best')).toHaveText('cheapest');
+  await expect.poll(async () => Object.keys((await app.doc(page, 'matching/links')).map)).toHaveLength(1);
+
+  await page.locator('#cback').click();
+  await expect(page.locator('#view thead th').first()).toHaveText('Item');
 });
 
-test('compare: letter sizes, no-size rows, no results and too many results', async ({ page, openApp }) => {
+test('compare: price warnings, weak guesses hidden until asked for, and a new search', async ({ page, openApp }) => {
+  const a = { id: 'a', name: 'A', rows: [['كانيولا جرين 18', 2], ['بلاستر فريد 10 سم', 5]] };
+  const b = { id: 'b', name: 'B', rows: [['كانيولا جرين 18', 12], ['بلاستر فريد', 50]] };
+  await openApp({ docs: seed({ suppliers: [a, b] }) });
+  await app.ready(page);
+  await app.tab(page, 'compare');
+  await page.locator('#cq').fill('كانيولا');
+  await page.locator('#view [data-cpick]').first().click();
+  await expect(page.locator('#view tbody tr').last()).toContainText('so check the pack or unit');
+
+  await page.locator('#cq').fill('بلاستر');
+  await expect(page.locator('#view thead th').first()).toHaveText('Item'); // typing leaves the picked item
+  await expect(page.locator('#view tbody tr').first().locator('td').last()).toHaveText('none'); // a weak guess is not counted
+  await page.locator('#view [data-cpick]', { hasText: 'بلاستر فريد 10' }).click();
+  await expect(page.locator('#view tbody tr')).toHaveCount(1);
+  await expect(page.locator('#view .note')).toContainText('Only weak guesses');
+  await page.locator('#cweak').check();
+  await expect(page.locator('#view tbody tr')).toHaveCount(2);
+  await expect(page.locator('#view .chip.lvl-low')).toHaveText('Weak');
+});
+
+test('compare: an item only one supplier sells, no results and too many results', async ({ page, openApp }) => {
   const many = { id: 'm', name: 'Many', rows: [['قطن طبي', 9], ...Array.from({ length: 401 }, (_, i) => ['جوانتي ' + i, 1])] };
   await openApp({ docs: seed({ suppliers: [nile, delta, many] }) });
   await app.ready(page);
   await app.tab(page, 'compare');
-  await page.locator('#cq').fill('جاون');
-  await expect(page.locator('#view tbody td.size')).toHaveText(['35 جم XL']); // the grams detail is shown with the size
   await page.locator('#cq').fill('قطن');
-  await expect(page.locator('#view tbody td.size')).toHaveText(['No size in name']);
-  await page.locator('#cq').fill('كمامة');
-  await expect(page.locator('#view tbody td.size')).toHaveText(['3']);
-  await page.locator('#cmulti').check();
-  await expect(page.locator('#view .panel.empty')).toContainText('No size is sold by more than one supplier.');
-  await page.locator('#cmulti').uncheck();
+  await page.locator('#view [data-cpick]').first().click();
+  await expect(page.locator('#view .note')).toContainText('No other supplier seems to sell this item.');
+  await expect(page.locator('#view .chip.best')).toHaveCount(0);
   await page.locator('#cq').fill('غير موجود');
   await expect(page.locator('#view .panel.empty')).toContainText('No items contain this.');
   await page.locator('#cq').fill('جوانتي');

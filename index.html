@@ -90,13 +90,7 @@ input.ar { direction: rtl; text-align: right; }
 .chip.lvl-medium { background: var(--accent-weak); color: var(--accent); }
 .chip.lvl-low { background: var(--warn-bg); color: var(--warn); }
 .warn-text { color: var(--warn); }
-.grid-cell { min-width: 150px; vertical-align: top; }
-.grid-cell .offer { padding: 3px 0; }
-.grid-cell .offer + .offer { border-top: 1px dashed var(--line); }
-.grid-cell .offer button { all: unset; cursor: pointer; display: block; unicode-bidi: plaintext; font-size: 13px; }
-.grid-cell .offer button:hover { color: var(--accent); text-decoration: underline; }
-.grid-cell .offer.cheapest b { color: var(--best); }
-th.size, td.size { position: sticky; left: 0; background: var(--surface-2); white-space: nowrap; font-weight: 600; }
+tr.cheapest td.num b { color: var(--best); }
 .match-notes { grid-column: 1 / -1; display: flex; gap: 6px 16px; flex-wrap: wrap; }
 td input.margin { width: 74px; text-align: right; }
 td select.buy { max-width: 170px; }
@@ -155,7 +149,7 @@ const AI = () => window.SPD_AI || null;
 const S = {
   db: null, ready: false, gated: false,
   suppliers: {}, chunks: {}, links: {}, dismissed: {}, packs: {}, claude: {}, prodOv: {}, settings: null, quotes: {},
-  tab: 'products', q: '', filter: 'all', mq: '', mlevel: 'likely', mshow: 80, cq: '', cmulti: false, cat: '', sort: 'name', page: 0,
+  tab: 'products', q: '', filter: 'all', mq: '', mlevel: 'likely', mshow: 80, cq: '', cpick: '', cweak: false, cat: '', sort: 'name', page: 0,
   quote: loadDraft(), importState: null,
 };
 const DEFAULTS = { defaultMargin: 0.2, mode: 'markup', round: 0, currency: 'ج.م', company: '', catMargins: {}, fields: {}, perPiece: true };
@@ -295,15 +289,29 @@ function sellPrice(cost, m, st) {
 // Matching a big list takes about half a second, so it only runs again when the lists, links or
 // dismissed pairs change, not after a margin or quote edit.
 let suggestCache = null, suggestRaw = null, suggestSig = '';
+function suggestSignature() {
+  useWords();
+  return JSON.stringify(settings().words || '') + Object.keys(S.dismissed).join(',') + '#' + D.products.map(p => p.pid + ':' + p.offers.map(o => o.key).join(',') + ':' + p.best.net).join('|');
+}
+const suggestItems = () => D.products.map(p => ({ pid: p.pid, name: p.offers[0].name, detail: p.offers[0].detail, sids: new Set(p.offers.map(o => o.sid)), price: p.best.net }));
 function suggestions() {
   if (suggestCache) return suggestCache;
-  useWords();
-  const sig = JSON.stringify(settings().words || '') + Object.keys(S.dismissed).join(',') + '#' + D.products.map(p => p.pid + ':' + p.offers.map(o => o.key).join(',') + ':' + p.best.net).join('|');
-  if (sig !== suggestSig) {
-    const items = D.products.map(p => ({ pid: p.pid, name: p.offers[0].name, detail: p.offers[0].detail, sids: new Set(p.offers.map(o => o.sid)), price: p.best.net }));
-    suggestRaw = Matcher.suggest(items, { dismissed: S.dismissed }); suggestSig = sig;
-  }
+  const sig = suggestSignature();
+  if (sig !== suggestSig) { suggestRaw = Matcher.suggest(suggestItems(), { dismissed: S.dismissed }); suggestSig = sig; }
   return (suggestCache = suggestRaw.map(s => ({ ...s, a: D.byPid[s.a.pid], b: D.byPid[s.b.pid] })));
+}
+// The Compare tab lists every candidate for one item; the Matching tab only keeps each item's strongest three.
+let candCache = null, candIndex = new Map(), candSig = '';
+function candidates() {
+  if (candCache === D) return candIndex;
+  const sig = suggestSignature();
+  if (sig !== candSig) {
+    candIndex = new Map(); candSig = sig;
+    for (const s of Matcher.suggest(suggestItems(), { dismissed: S.dismissed, perProduct: Infinity }))
+      for (const [me, other] of [[s.a, s.b], [s.b, s.a]]) (candIndex.get(me.pid) || candIndex.set(me.pid, []).get(me.pid)).push({ pid: other.pid, level: s.level, notes: s.notes });
+  }
+  candCache = D;
+  return candIndex;
 }
 // After a pair whose names use different words is linked, offer to remember those words,
 // so the next price lists match by themselves.
@@ -657,45 +665,55 @@ function renderMatching(v) {
   if ($('#mmore')) $('#mmore').onclick = () => { S.mshow += 80; render(); };
 }
 
-// ---------- compare (family grid) ----------
-// One kind of item laid out by size (rows) and supplier (columns), so gaps and the cheapest supplier show at a glance.
-function sizeLabel(o) {
-  useWords();
-  const d = Matcher.describe(o.name, o.detail);
-  return [d.sizes.replace(/ /g, ' × '), d.specs.replace(/(\d)g\b/g, '$1 جم').replace(/ (?=\d)/g, ' · '), d.letters.toUpperCase()].filter(Boolean).join(' ');
+// ---------- compare (one item) ----------
+// Search, pick one item, then see what each supplier charges for it, cheapest first.
+// Linked offers are the same item; anything else is the matcher's guess until a person confirms it.
+const closeGuesses = pid => (candidates().get(pid) || []).filter(c => c.level !== 'low');
+const otherPrices = p => p.offers.length - 1 + closeGuesses(p.pid).reduce((n, c) => n + D.byPid[c.pid].offers.length, 0);
+function compareList(q) {
+  if (q.length < 2) return '';
+  const TOO_MANY = 400, offers = D.offers.filter(o => matches(o.name + ' ' + o.detail, q));
+  if (offers.length > TOO_MANY) return `<div class="panel empty">${offers.length.toLocaleString()} items contain this word. Add another word, a brand or a size, to narrow it down.</div>`;
+  if (!offers.length) return `<div class="panel empty">No items contain this. Try a shorter word or another spelling.</div>`;
+  const list = [...new Set(offers.map(o => D.byPid[o.pid]))].sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+  return `<div class="tablebox" style="overflow-x:auto"><table>
+    <thead><tr><th>Item</th><th>Supplier</th><th class="num">Price</th><th class="num">Other prices</th></tr></thead>
+    <tbody>${list.map(p => `<tr><td class="pname"><button data-cpick="${esc(p.pid)}">${esc(p.name)}</button>${p.detail ? `<div class="det">${esc(p.detail)}</div>` : ''}</td>
+      <td class="small muted">${esc([...new Set(p.offers.map(o => o.sup))].join(', '))}</td><td class="num">${fmt(p.best.net)}</td><td class="num">${otherPrices(p) || '<span class="muted">none</span>'}</td></tr>`).join('')}</tbody>
+  </table><div class="pager"><span class="muted small">${list.length} items. Click one to compare its price between suppliers.</span></div></div>`;
+}
+function comparePicked(p) {
+  const found = candidates().get(p.pid) || [], weak = found.filter(c => c.level === 'low').length;
+  const guesses = S.cweak ? found : closeGuesses(p.pid);
+  const cost = r => r.o.price > 0 ? r.o.net : Infinity; // a 0 or missing price is never the cheapest
+  const rows = [...p.offers.map(o => ({ o })), ...guesses.flatMap(c => D.byPid[c.pid].offers.map(o => ({ o, guess: c })))].sort((a, b) => cost(a) - cost(b));
+  const min = Math.min(...rows.map(cost)), compared = new Set(rows.map(r => r.o.sid)).size > 1;
+  const status = r => r.guess ? `${levelChip(r.guess.level)} <button class="btn small primary" data-merge="${esc(r.guess.pid)}" data-into="${esc(p.pid)}">Same product</button>`
+    : `<span class="chip">${p.offers.length > 1 ? 'Linked' : 'This item'}</span>`;
+  const row = r => {
+    const o = r.o, best = compared && cost(r) === min && min < Infinity, notes = (r.guess?.notes || []).filter(n => !n.ok);
+    return `<tr class="${best ? 'cheapest' : ''}"><td class="small">${esc(o.sup)}</td>
+      <td class="pname"><button data-open="${esc(o.pid)}">${esc(o.name)}</button>${o.detail ? `<div class="det">${esc(o.detail)}</div>` : ''}${notes.map(n => `<div class="det">${esc(n.text)}</div>`).join('')}</td>
+      <td class="num"><b>${fmt(o.price)}</b>${o.net !== o.price ? ` <span class="small muted" title="${esc(netText(o))}">→ ${fmt(o.net)}</span>` : ''}${trend(o)}${best ? ' <span class="chip best">cheapest</span>' : ''}</td>
+      <td>${status(r)}</td></tr>`;
+  };
+  const hint = compared ? '' : `<div class="note">${weak && !S.cweak ? 'Only weak guesses were found for this item. Tick the box above to see them.' : 'No other supplier seems to sell this item. Open it to search the other lists and link it by hand.'}</div>`;
+  return `<div class="panel"><div class="row"><button class="btn small" id="cback">Back to results</button><h3 class="ar grow">${esc(p.name)}</h3>
+      ${weak ? `<label class="row small"><input type="checkbox" id="cweak" ${S.cweak ? 'checked' : ''}> Show weak guesses too (${weak})</label>` : ''}</div>${hint}</div>
+    ${compared && AI() ? AI().compareBox(p, rows) : ''}<div class="tablebox" style="overflow-x:auto"><table>
+      <thead><tr><th>Supplier</th><th>Item</th><th class="num">Price</th><th>Same item?</th></tr></thead>
+      <tbody>${rows.map(row).join('')}</tbody>
+    </table></div>`;
 }
 function renderCompare(v) {
-  const q = S.cq.trim(), sups = supplierOrder();
-  const offers = q.length < 2 ? [] : D.offers.filter(o => matches(o.name + ' ' + o.detail, q));
-  const rows = new Map();
-  for (const o of offers) { const k = sizeLabel(o); (rows.get(k) || rows.set(k, []).get(k)).push(o); }
-  let list = [...rows.entries()].map(([size, os]) => ({ size, os, sids: new Set(os.map(o => o.sid)) }));
-  if (S.cmulti) list = list.filter(r => r.sids.size > 1);
-  const num = s => parseFloat(s) || (s ? Infinity : -1);
-  list.sort((a, b) => num(a.size) - num(b.size) || a.size.localeCompare(b.size));
-  const cols = sups.filter(s => list.some(r => r.sids.has(s.id)));
-  const TOO_MANY = 400, shown = offers.length > TOO_MANY ? [] : list;
-  const cell = (r, sid) => {
-    const os = r.os.filter(o => o.sid === sid).sort((a, b) => a.net - b.net);
-    const min = Math.min(...r.os.filter(o => o.price > 0).map(o => o.net));
-    return `<td class="grid-cell">${os.map(o => `<div class="offer ${r.sids.size > 1 && o.net === min ? 'cheapest' : ''}">
-      <button class="ar" data-open="${esc(o.pid)}">${esc(o.name)}</button>
-      <b>${fmt(o.price)}</b>${o.net !== o.price ? ` <span class="small muted" title="${esc(netText(o))}">→ ${fmt(o.net)}</span>` : ''}${trend(o)}${(D.byPid[o.pid]?.nSup || 0) > 1 ? ' <span class="chip">linked</span>' : ''}${r.sids.size > 1 && o.net === min ? ' <span class="chip best">cheapest</span>' : ''}</div>`).join('')}</td>`;
-  };
-  v.innerHTML = `<div class="panel"><h2>Compare one kind of item</h2>
-    <p class="muted">Search for an item, like شاش or رباط ضاغط. Sizes run down the side and suppliers across the top, so you can see who sells each size and who is cheapest. The arrow shows the net price of one piece after the discount and pack size; a listed price several times higher usually means a box, so open the item and set its pieces per pack. Open an item to link it with the same product from another supplier too.</p>
-    <div class="row">
-      <input class="grow" id="cq" type="search" placeholder="e.g. شاش" value="${esc(S.cq)}" aria-label="Item to compare">
-      <label class="row small"><input type="checkbox" id="cmulti" ${S.cmulti ? 'checked' : ''}> Only sizes sold by 2+ suppliers</label>
-    </div></div>
-    ${q.length < 2 ? '' : offers.length > TOO_MANY ? `<div class="panel empty">${offers.length.toLocaleString()} items contain this word. Add another word, a brand or a size, to narrow it down.</div>`
-      : !shown.length ? `<div class="panel empty">${S.cmulti && offers.length ? 'No size is sold by more than one supplier. Untick the box to see every item.' : 'No items contain this. Try a shorter word or another spelling.'}</div>`
-      : `${AI() ? AI().compareBox(q, shown, cols) : ''}<div class="tablebox" style="overflow-x:auto"><table>
-      <thead><tr><th class="size">Size</th>${cols.map(s => `<th>${esc(s.name)}</th>`).join('')}</tr></thead>
-      <tbody>${shown.map(r => `<tr><td class="size">${esc(r.size || 'No size in name')}</td>${cols.map(s => cell(r, s.id)).join('')}</tr>`).join('')}</tbody>
-    </table><div class="pager"><span class="muted small">${offers.length} items in ${shown.length} sizes from ${cols.length} suppliers</span></div></div>`}`;
-  const cq = $('#cq'); cq.oninput = () => { S.cq = cq.value; clearTimeout(cq.t); cq.t = setTimeout(() => { render(); const n = $('#cq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); };
-  $('#cmulti').onchange = e => { S.cmulti = e.target.checked; render(); };
+  const q = S.cq.trim(), pick = D.byPid[S.cpick];
+  v.innerHTML = `<div class="panel"><h2>Compare one item</h2>
+    <p class="muted">Search for an item, like شاش or رباط ضاغط, and click the one you want. You will see what each supplier charges for it, cheapest first. Items you linked are the same product; the others are the app's guesses from the name until you press Same product. The arrow shows the net price of one piece after the discount and pack size; a listed price several times higher usually means a box, so open the item and set its pieces per pack.</p>
+    <div class="row"><input class="grow" id="cq" type="search" placeholder="e.g. شاش" value="${esc(S.cq)}" aria-label="Item to compare"></div></div>
+    ${pick ? comparePicked(pick) : compareList(q)}`;
+  const cq = $('#cq'); cq.oninput = () => { S.cq = cq.value; S.cpick = ''; clearTimeout(cq.t); cq.t = setTimeout(() => { render(); const n = $('#cq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); };
+  if ($('#cback')) $('#cback').onclick = () => { S.cpick = ''; render(); };
+  if ($('#cweak')) $('#cweak').onchange = e => { S.cweak = e.target.checked; render(); };
 }
 
 // ---------- suppliers & import ----------
@@ -1303,6 +1321,7 @@ document.addEventListener('click', e => {
   const d = t.dataset;
   if (d.go) { S.tab = d.go; render(); }
   else if (d.open) openProduct(d.open);
+  else if (d.cpick) { S.cpick = d.cpick; render(); }
   else if (d.addq) addToQuote(d.addq);
   else if (d.merge) {
     const s = d.learn && suggestions().find(x => x.pk === d.learn);

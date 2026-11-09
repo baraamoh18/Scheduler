@@ -144,10 +144,11 @@ test('Explain this comparison streams Claude\'s summary of the grid', async ({ p
   await start(openPage, page, { chatText: 'Nile is cheapest per piece on every size.' });
   await app.tab(page, 'compare');
   await page.locator('#cq').fill('شاش');
+  await page.locator('#view [data-cpick]', { hasText: 'شاش طبي 10' }).click();
   await page.locator('[data-ai-compare]').click();
   await expect(page.locator('#view .ai')).toContainText('Nile is cheapest per piece on every size.');
   const sent = (await calls(page))[0].input;
-  expect(sent).toContain('"search "شاش"'.slice(1));
+  expect(sent).toContain('the item "شاش طبي 10');
   expect(sent).toContain('الدلتا للمستلزمات');
 });
 
