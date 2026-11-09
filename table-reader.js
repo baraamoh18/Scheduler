@@ -6,7 +6,9 @@
   const MARKS = /[‎‏‪-‮⁦-⁩]/g;
   const CURRENCY = /(ج\.?\s?م\.?|جنيه|جنية|egp|le|l\.e\.?)/gi;
   const toLatin = s => String(s).replace(/[٠-٩]/g, d => AR_DIG.indexOf(d)).replace(/٫/g, '.');
-  const clean = s => String(s).replace(MARKS, '').replace(/\s+/g, ' ').trim();
+  // some PDFs store لا as one joined character, which would not match the same word typed normally
+  const LAM_ALEF = { 'ﻵ': 'لآ', 'ﻶ': 'لآ', 'ﻷ': 'لأ', 'ﻸ': 'لأ', 'ﻹ': 'لإ', 'ﻺ': 'لإ', 'ﻻ': 'لا', 'ﻼ': 'لا' };
+  const clean = s => String(s).replace(MARKS, '').replace(/[ﻵ-ﻼ]/g, c => LAM_ALEF[c]).replace(/\s+/g, ' ').trim();
   const numText = s => clean(s).replace(CURRENCY, '').replace(/(^|\s)\.?م\.?(?=\s|$)/g, ' ').trim();
   const isNumber = s => /^[\d٠-٩][\d٠-٩.,٫٬]*$/.test(numText(s));
   const parsePrice = s => { const m = toLatin(numText(s)).replace(/[٬,](?=\d{3}\b)/g, '').replace(/,/g, '.').match(/\d+(?:\.\d+)?/); return m ? parseFloat(m[0]) : NaN; };
