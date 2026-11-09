@@ -14,9 +14,9 @@ test('the starting lists match colours and same-meaning words; search uses them'
   await expect(matchRow(page, 'غيار جراحي').locator('.chip')).toHaveText('Very likely');
   await app.tab(page, 'compare');
   await page.locator('#cq').fill('درسنج'); // a spelling one letter off, and a synonym
-  await expect(page.locator('#view .grid-cell .offer')).toHaveCount(2);
+  await expect(page.locator('#view [data-cpick]')).toHaveCount(2);
   await page.locator('#cq').fill('كانيولا خضراء');
-  await expect(page.locator('#view .grid-cell .offer')).toHaveCount(2);
+  await expect(page.locator('#view [data-cpick]')).toHaveCount(2);
 });
 
 test('linking a pair with different words offers to remember them', async ({ page, openApp }) => {
